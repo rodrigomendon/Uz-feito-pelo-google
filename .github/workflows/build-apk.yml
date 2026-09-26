@@ -24,17 +24,30 @@ jobs:
           rm -rf "$RUNNER_TEMP/ultrazoom-project"
           mkdir -p "$RUNNER_TEMP/ultrazoom-project"
           archive="UltraZoom-00-v12.4.0-AUTODIAGNOSTIC.zip"
-          if [ ! -f "$archive" ]; then
-            echo "ERROR: $archive not found in repository root."
-            echo "ZIPs found in repository root:"
-            find . -maxdepth 1 -type f -name 'UltraZoom*.zip' -print
-            exit 1
+          if [ -f "$archive" ]; then
+            echo "Using archive: $archive"
+            unzip -q -o "$archive" -d "$RUNNER_TEMP/ultrazoom-project"
           fi
-          echo "Using archive: $archive"
-          unzip -q -o "$archive" -d "$RUNNER_TEMP/ultrazoom-project"
           project="$RUNNER_TEMP/ultrazoom-project"
           if [ -d "$project/UltraZoom" ] && [ -f "$project/UltraZoom/settings.gradle" ]; then
             project="$project/UltraZoom"
+          fi
+          if [ -d "standalone-gradle" ] && [ -d "app/src/main/java/com/rodrigo" ]; then
+            echo "Syncing latest repository sources into isolated Android project..."
+            cp -f standalone-gradle/build.gradle "$project/build.gradle"
+            cp -f standalone-gradle/settings.gradle "$project/settings.gradle"
+            cp -f standalone-gradle/gradle.properties "$project/gradle.properties"
+            mkdir -p "$project/app"
+            cp -f standalone-gradle/app/build.gradle "$project/app/build.gradle"
+            mkdir -p "$project/app/src/main" "$project/app/src/test/java"
+            cp -f app/src/main/AndroidManifest.xml "$project/app/src/main/AndroidManifest.xml"
+            cp -rf app/src/main/res "$project/app/src/main/"
+            mkdir -p "$project/app/src/main/java/com"
+            cp -rf app/src/main/java/com/rodrigo "$project/app/src/main/java/com/"
+            if [ -d "app/src/test/java/com/rodrigo" ]; then
+              mkdir -p "$project/app/src/test/java/com"
+              cp -rf app/src/test/java/com/rodrigo "$project/app/src/test/java/com/"
+            fi
           fi
           test -f "$project/settings.gradle"
           test -f "$project/build.gradle"

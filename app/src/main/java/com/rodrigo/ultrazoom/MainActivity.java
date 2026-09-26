@@ -108,6 +108,22 @@ public class MainActivity extends Activity {
         if (r == REQ && g.length > 0 && g[0] == PackageManager.PERMISSION_GRANTED) camera.start();
         else Toast.makeText(this, "A câmera é necessária para o UltraZoom.", Toast.LENGTH_LONG).show();
     }
+
+    public View getCameraView() { return camera; }
+    public boolean isHudLayoutValid() { return camera != null && camera.isLayoutValid(); }
+    public String getHudLayoutDiagnostic() { return camera == null ? "NULL" : camera.getLayoutDiagnostic(); }
+    public RectF getMiniRect() { return camera == null ? new RectF() : new RectF(camera.getUiMini()); }
+    public RectF getZoomAreaRect() { return camera == null ? new RectF() : new RectF(camera.getUiZoomArea()); }
+    public RectF getZoomBadgeRect() { return camera == null ? new RectF() : new RectF(camera.getUiZoomBadge()); }
+    public RectF getTelemetryCardRect() { return camera == null ? new RectF() : new RectF(camera.getUiTelemetryCard()); }
+    public RectF getLensRect(int idx) { return camera == null ? new RectF() : new RectF(camera.getUiLens(idx)); }
+    public float getUiScale() { return camera == null ? 1f : camera.getUiScale(); }
+    public void setModalStateForAudit(boolean info, boolean modeMenu, boolean cameraMenu) {
+        if (camera != null) camera.setModalStateForAudit(info, modeMenu, cameraMenu);
+    }
+    public void populateSampleHardwareStateForAudit(boolean wide, float maxZ, float currentZoom) {
+        if (camera != null) camera.populateSampleHardwareStateForAudit(wide, maxZ, currentZoom);
+    }
 }
 
 class UltraCameraView extends ViewGroup {
@@ -231,8 +247,12 @@ class UltraCameraView extends ViewGroup {
     };
 
     private static class UiLayout {
+        final RectF header = new RectF();
+        final RectF zoomBadge = new RectF();
+        final RectF telemetryCard = new RectF();
         final RectF mini = new RectF();
         final RectF zoomArea = new RectF();
+        final RectF zoomTrack = new RectF();
         final RectF flash = new RectF();
         final RectF shutter = new RectF();
         final RectF mode = new RectF();
@@ -240,29 +260,95 @@ class UltraCameraView extends ViewGroup {
         final RectF logExport = new RectF();
         final RectF camera = new RectF();
         final RectF[] lens = new RectF[]{new RectF(), new RectF(), new RectF(), new RectF(), new RectF()};
+        final RectF modeSheet = new RectF();
+        final RectF[] modeItems = new RectF[]{new RectF(), new RectF(), new RectF(), new RectF(), new RectF()};
+        final RectF cameraSheet = new RectF();
+        final RectF[] cameraItems = new RectF[]{
+                new RectF(), new RectF(), new RectF(), new RectF(),
+                new RectF(), new RectF(), new RectF(), new RectF()
+        };
+        final RectF infoSheet = new RectF();
+        final RectF infoClose = new RectF();
         float scale = 1f;
+        float deckTop = 0f;
         float lensGap = 0f;
         float lensWidth = 0f;
 
         void compute(int w, int h) {
-            scale = Math.max(0.88f, Math.min(1.24f, w / 900f));
-            mini.set(w - 132 * scale, 138 * scale, w - 28 * scale, 282 * scale);
-            float y = 202 * scale;
-            lensGap = 8 * scale;
-            lensWidth = (w - 56 * scale - 4 * lensGap) / 5f;
-            for (int i = 0; i < lens.length; i++) {
-                float x = 28 * scale + i * (lensWidth + lensGap);
-                lens[i].set(x, y, x + lensWidth, y + 58 * scale);
+            float sW = w / 900f;
+            float sH = h / 1680f;
+            scale = Math.max(0.74f, Math.min(1.55f, Math.min(sW, sH)));
+
+            // Top obsidian header bar
+            header.set(0f, 0f, w, 158 * scale);
+            zoomBadge.set(w - 256 * scale, 14 * scale, w - 20 * scale, 144 * scale);
+
+            // Bottom deck start (418 * scale tall so on 20:9 displays it sits below the 4:3 viewfinder)
+            deckTop = h - 418 * scale;
+
+            // Upper Telemetry + Minimap strip anchored directly below header (in upper letterbox on 20:9)
+            float miniTop = header.bottom + 12 * scale;
+            float miniW = 154 * scale;
+            float miniH = 196 * scale;
+            float maxMiniBottom = deckTop - 14 * scale;
+            if (miniTop + miniH > maxMiniBottom) {
+                miniH = Math.max(120 * scale, maxMiniBottom - miniTop);
             }
-            float zy = h - 358 * scale;
-            zoomArea.set(28 * scale, zy - 8 * scale, w - 28 * scale, zy + 128 * scale);
-            float cy = h - 118 * scale;
-            flash.set(28 * scale, cy - 50 * scale, 136 * scale, cy + 50 * scale);
-            shutter.set(w / 2f - 62 * scale, cy - 62 * scale, w / 2f + 62 * scale, cy + 62 * scale);
-            mode.set(w - 136 * scale, cy - 50 * scale, w - 28 * scale, cy + 50 * scale);
-            camera.set(w - 168 * scale, h - 62 * scale, w - 92 * scale, h - 4 * scale);
-            info.set(w - 84 * scale, h - 62 * scale, w - 18 * scale, h - 4 * scale);
-            logExport.set(150 * scale, h - 62 * scale, 246 * scale, h - 4 * scale);
+            mini.set(w - miniW - 20 * scale, miniTop, w - 20 * scale, miniTop + miniH);
+            telemetryCard.set(20 * scale, miniTop, mini.left - 12 * scale, mini.bottom);
+
+            // Bottom Row D: 3 symmetric luxury utility pills (LOG, CAM, INFO)
+            float utilTop = h - 74 * scale;
+            float utilBottom = h - 14 * scale;
+            float utilGap = 12 * scale;
+            float utilW = (w - 40 * scale - 2 * utilGap) / 3f;
+            logExport.set(20 * scale, utilTop, 20 * scale + utilW, utilBottom);
+            camera.set(logExport.right + utilGap, utilTop, logExport.right + utilGap + utilW, utilBottom);
+            info.set(camera.right + utilGap, utilTop, camera.right + utilGap + utilW, utilBottom);
+
+            // Bottom Row C: Primary capture deck (FLASH, SHUTTER, MODE)
+            float cy = h - 142 * scale;
+            shutter.set(w / 2f - 56 * scale, cy - 56 * scale, w / 2f + 56 * scale, cy + 56 * scale);
+            flash.set(20 * scale, cy - 44 * scale, shutter.left - 20 * scale, cy + 44 * scale);
+            mode.set(shutter.right + 20 * scale, cy - 44 * scale, w - 20 * scale, cy + 44 * scale);
+
+            // Bottom Row B: Optical zoom dial card + inner logarithmic track
+            zoomArea.set(20 * scale, h - 326 * scale, w - 20 * scale, h - 208 * scale);
+            zoomTrack.set(zoomArea.left + 36 * scale, zoomArea.top + 42 * scale, zoomArea.right - 36 * scale, zoomArea.top + 82 * scale);
+
+            // Bottom Row A: Ergonomic lens pill dock above zoom dial
+            float lensTop = h - 404 * scale;
+            float lensBottom = h - 338 * scale;
+            lensGap = 10 * scale;
+            lensWidth = (w - 40 * scale - 4 * lensGap) / 5f;
+            for (int i = 0; i < lens.length; i++) {
+                float x = 20 * scale + i * (lensWidth + lensGap);
+                lens[i].set(x, lensTop, x + lensWidth, lensBottom);
+            }
+
+            // Modal sheet geometry: Mode Picker
+            modeSheet.set(20 * scale, 88 * scale, w - 20 * scale, h - 36 * scale);
+            float modeY = 198 * scale;
+            float modeStep = Math.min(98 * scale, (modeSheet.bottom - 76 * scale - modeY) / MODES.length);
+            float modeCardH = Math.max(64 * scale, modeStep - 12 * scale);
+            for (int i = 0; i < modeItems.length; i++) {
+                float top = modeY + i * modeStep;
+                modeItems[i].set(36 * scale, top, w - 36 * scale, top + modeCardH);
+            }
+
+            // Modal sheet geometry: Camera Picker
+            cameraSheet.set(18 * scale, 48 * scale, w - 18 * scale, h - 24 * scale);
+            float camY = 152 * scale;
+            float camStep = Math.min(92 * scale, (cameraSheet.bottom - 68 * scale - camY) / 8f);
+            float camCardH = Math.max(58 * scale, camStep - 10 * scale);
+            for (int i = 0; i < cameraItems.length; i++) {
+                float top = camY + i * camStep;
+                cameraItems[i].set(32 * scale, top, w - 32 * scale, top + camCardH);
+            }
+
+            // Modal sheet geometry: Diagnostic Info Screen
+            infoSheet.set(16 * scale, 24 * scale, w - 16 * scale, h - 20 * scale);
+            infoClose.set(28 * scale, h - 80 * scale, w - 28 * scale, h - 30 * scale);
         }
     }
 
@@ -359,38 +445,247 @@ class UltraCameraView extends ViewGroup {
         c.drawText(s, x - text.measureText(s) / 2f, y, text);
     }
 
+    private void fitTxt(Canvas c, String s, float x, float y, float maxWidth, float size, int color, boolean bold) {
+        if (s == null) return;
+        Typeface tf = Typeface.create("sans", bold ? Typeface.BOLD : Typeface.NORMAL);
+        text.setTypeface(tf);
+        text.setColor(color);
+        float minSize = Math.max(16.5f * ui.scale, size * 0.80f);
+        float curSize = size;
+        text.setTextSize(curSize);
+        if (maxWidth > 0) {
+            while (curSize > minSize && text.measureText(s) > maxWidth) {
+                curSize -= 0.5f;
+                text.setTextSize(curSize);
+            }
+        }
+        String out = s;
+        if (maxWidth > 0 && text.measureText(out) > maxWidth) {
+            while (out.length() > 3 && text.measureText(out + "…") > maxWidth) {
+                out = out.substring(0, out.length() - 1);
+            }
+            out = out + "…";
+        }
+        c.drawText(out, x, y, text);
+    }
+
+    private void centerFit(Canvas c, String s, float cx, float y, float maxWidth, float size, int color, boolean bold) {
+        if (s == null) return;
+        Typeface tf = Typeface.create("sans", bold ? Typeface.BOLD : Typeface.NORMAL);
+        text.setTypeface(tf);
+        text.setColor(color);
+        float minSize = Math.max(16.5f * ui.scale, size * 0.80f);
+        float curSize = size;
+        text.setTextSize(curSize);
+        if (maxWidth > 0) {
+            while (curSize > minSize && text.measureText(s) > maxWidth) {
+                curSize -= 0.5f;
+                text.setTextSize(curSize);
+            }
+        }
+        String out = s;
+        if (maxWidth > 0 && text.measureText(out) > maxWidth) {
+            while (out.length() > 3 && text.measureText(out + "…") > maxWidth) {
+                out = out.substring(0, out.length() - 1);
+            }
+            out = out + "…";
+        }
+        c.drawText(out, cx - text.measureText(out) / 2f, y, text);
+    }
+
+    private void rightTxt(Canvas c, String s, float rightX, float y, float maxWidth, float size, int color, boolean bold) {
+        if (s == null) return;
+        Typeface tf = Typeface.create("sans", bold ? Typeface.BOLD : Typeface.NORMAL);
+        text.setTypeface(tf);
+        text.setColor(color);
+        float minSize = Math.max(16.5f * ui.scale, size * 0.80f);
+        float curSize = size;
+        text.setTextSize(curSize);
+        if (maxWidth > 0) {
+            while (curSize > minSize && text.measureText(s) > maxWidth) {
+                curSize -= 0.5f;
+                text.setTextSize(curSize);
+            }
+        }
+        String out = s;
+        if (maxWidth > 0 && text.measureText(out) > maxWidth) {
+            while (out.length() > 3 && text.measureText(out + "…") > maxWidth) {
+                out = out.substring(0, out.length() - 1);
+            }
+            out = out + "…";
+        }
+        c.drawText(out, rightX - text.measureText(out), y, text);
+    }
+
+    private int statusAccentColor() {
+        String st = status == null ? "" : status;
+        if (st.contains("ERRO") || st.contains("FALHA") || st.contains("INDISPONÍVEL") || st.contains("NENHUMA")) return 0xFFEF4444;
+        if (st.contains("CAPTURANDO") || st.contains("FUSÃO") || st.contains("SALVA")) return 0xFF38BDF8;
+        if (zoomConfidence == ZoomConfidence.TRUSTED_RATIO || zoomConfidence == ZoomConfidence.TRUSTED_CROP_ONLY) return 0xFF10B981;
+        return 0xFFF5B041;
+    }
+
+    private int confidenceAccentColor(String stateName) {
+        if ("CONFIRMED".equals(stateName)) return 0xFF10B981;
+        if ("REVOKED".equals(stateName) || "FAIL".equals(stateName)) return 0xFFEF4444;
+        if ("PARTIAL".equals(stateName)) return 0xFFF5B041;
+        return 0xFF94A3B8;
+    }
+
     private void drawHud(Canvas c) {
         int w = getWidth(), h = getHeight();
         ui.compute(w, h);
-        float scale = ui.scale;
+        float s = ui.scale;
 
-        rounded(c, 0, 0, w, 150 * scale, 0, 0xB5000000);
-        rounded(c, 0, h - 360 * scale, w, h, 0, 0xD9070709);
+        drawViewfinderFrame(c, w, h, s);
 
-        txt(c, "ULTRAZOOM", 28 * scale, 44 * scale, 30 * scale, Color.WHITE, true);
-        txt(c, "CÂMERA COMPUTACIONAL", 30 * scale, 70 * scale, 15 * scale, WHITE_70, true);
-        txt(c, "● " + status, 30 * scale, 96 * scale, 16 * scale, 0xD9FFFFFF, false);
+        if (showInfo) {
+            drawInfo(c, s);
+            return;
+        }
+        if (showCameraMenu) {
+            drawCameraMenu(c, s);
+            return;
+        }
+        if (showModeMenu) {
+            drawModeSheet(c, s);
+            return;
+        }
 
-        center(c, zoomHudString(), w - 105 * scale, 54 * scale, 50 * scale, Color.WHITE, true);
-        center(c, MODES[mode.ordinal()], w - 105 * scale, 80 * scale, 16 * scale, WHITE_92, true);
-        center(c, zoomDomain(), w - 105 * scale, 102 * scale, 13 * scale, WHITE_70, false);
+        // Top luxury obsidian header bar + lower control deck backdrop
+        rounded(c, 0, 0, w, ui.header.bottom, 0, 0xEC08090C);
+        p.setColor(0x2EFFFFFF);
+        p.setStrokeWidth(Math.max(1f, 1.5f * s));
+        c.drawLine(0, ui.header.bottom, w, ui.header.bottom, p);
 
-        drawMiniMap(c, w, scale);
-        drawLensPills(c, w, scale);
-        drawZoomBar(c, w, h, scale);
-        drawBottom(c, w, h, scale);
+        rounded(c, 0, ui.deckTop, w, h, 28 * s, 0xEE08090C);
+        strokeRound(c, 2 * s, ui.deckTop, w - 2 * s, h + 28 * s, 28 * s, 1.5f * s, 0x28FFFFFF);
+
+        // Left header: Brand + Pro subtitle + Status capsule
+        float leftMaxW = ui.zoomBadge.left - 44 * s;
+        rounded(c, 20 * s, 20 * s, 26 * s, 78 * s, 3 * s, 0xFFF5B041);
+        fitTxt(c, "ULTRAZOOM", 36 * s, 50 * s, leftMaxW - 12 * s, 31 * s, Color.WHITE, true);
+        fitTxt(c, "PRO CAMERA2 • 12.4 AUTODIAGNOSTIC", 36 * s, 78 * s, leftMaxW - 12 * s, 18.5f * s, 0xFFD8E0EB, true);
+
+        RectF statusPill = new RectF(20 * s, 94 * s, ui.zoomBadge.left - 12 * s, 144 * s);
+        rounded(c, statusPill.left, statusPill.top, statusPill.right, statusPill.bottom, 24 * s, 0xD8141821);
+        strokeRound(c, statusPill.left, statusPill.top, statusPill.right, statusPill.bottom, 24 * s, 1.2f * s, 0x38FFFFFF);
+        p.setColor(statusAccentColor());
+        c.drawCircle(statusPill.left + 20 * s, statusPill.centerY(), 6.5f * s, p);
+        fitTxt(c, status, statusPill.left + 36 * s, statusPill.centerY() + 7 * s, statusPill.width() - 48 * s, 19 * s, Color.WHITE, true);
+
+        // Right header: Luxury Optical Zoom Readout Badge
+        rounded(c, ui.zoomBadge.left, ui.zoomBadge.top, ui.zoomBadge.right, ui.zoomBadge.bottom, 22 * s, 0xE212151E);
+        strokeRound(c, ui.zoomBadge.left, ui.zoomBadge.top, ui.zoomBadge.right, ui.zoomBadge.bottom, 22 * s, 1.6f * s, 0x77F5B041);
+        centerFit(c, zoomHudString(), ui.zoomBadge.centerX(), ui.zoomBadge.top + 48 * s, ui.zoomBadge.width() - 24 * s, 34 * s, 0xFFFFD166, true);
+        centerFit(c, MODES[mode.ordinal()] + " • " + zoomDomain(), ui.zoomBadge.centerX(), ui.zoomBadge.top + 78 * s, ui.zoomBadge.width() - 24 * s, 18.5f * s, WHITE_92, true);
+
+        String globalSt = diagnosticGlobalState();
+        RectF abcPill = new RectF(ui.zoomBadge.left + 12 * s, ui.zoomBadge.bottom - 42 * s, ui.zoomBadge.right - 12 * s, ui.zoomBadge.bottom - 10 * s);
+        int abcColor = confidenceAccentColor(globalSt);
+        rounded(c, abcPill.left, abcPill.top, abcPill.right, abcPill.bottom, 16 * s, (abcColor & 0x00FFFFFF) | 0x33000000);
+        strokeRound(c, abcPill.left, abcPill.top, abcPill.right, abcPill.bottom, 16 * s, 1.3f * s, abcColor);
+        centerFit(c, "A/B/C • " + globalSt, abcPill.centerX(), abcPill.centerY() + 6.5f * s, abcPill.width() - 16 * s, 18.5f * s, Color.WHITE, true);
+
+        drawTelemetryCard(c, s);
+        drawMiniMap(c, w, s);
+        drawLensPills(c, w, s);
+        drawZoomBar(c, w, h, s);
+        drawBottom(c, w, h, s);
 
         if (focusUntil > System.currentTimeMillis()) {
-            p.setStyle(Paint.Style.STROKE);
-            p.setStrokeWidth(3 * scale);
-            p.setColor(Color.WHITE);
-            c.drawRoundRect(focusX - 34 * scale, focusY - 34 * scale, focusX + 34 * scale, focusY + 34 * scale, 8, 8, p);
-            p.setStyle(Paint.Style.FILL);
+            drawFocusReticle(c, focusX, focusY, s);
             postInvalidateDelayed(80);
         }
-        if (showModeMenu) drawModeSheet(c, scale);
-        if (showInfo) drawInfo(c, scale);
-        else if (showCameraMenu) drawCameraMenu(c, scale);
+    }
+
+    private void drawTelemetryCard(Canvas c, float s) {
+        RectF box = ui.telemetryCard;
+        if (box.width() < 160 * s || box.height() < 110 * s) return;
+        rounded(c, box.left, box.top, box.right, box.bottom, 18 * s, 0xDF0B0E14);
+        strokeRound(c, box.left, box.top, box.right, box.bottom, 18 * s, 1.4f * s, 0x38FFFFFF);
+
+        float padX = 16 * s;
+        float innerW = box.width() - 2 * padX;
+        fitTxt(c, "AUTODIAGNÓSTICO REAL • TOQUE P/ DETALHES", box.left + padX, box.top + 28 * s, innerW, 18 * s, 0xFFFFD166, true);
+
+        // 3 horizontal A / B / C live badges inside telemetry card
+        float pillTop = box.top + 40 * s;
+        float pillH = Math.min(64 * s, (box.height() - 86 * s));
+        float gap = 8 * s;
+        float pillW = (innerW - 2 * gap) / 3f;
+        drawMiniConfidenceBadge(c, box.left + padX, pillTop, pillW, pillH, "CAMADA A", mapLayerAState().name(), s);
+        drawMiniConfidenceBadge(c, box.left + padX + pillW + gap, pillTop, pillW, pillH, "CAMADA B", diagnosticStore.getLayerBState().name(), s);
+        drawMiniConfidenceBadge(c, box.left + padX + 2 * (pillW + gap), pillTop, pillW, pillH, "CAMADA C", diagnosticStore.getLayerCState().name(), s);
+
+        String geoVal = (zoomConfidence == ZoomConfidence.TRUSTED_CROP_ONLY || zoomConfidence == ZoomConfidence.TRUSTED_RATIO)
+                ? String.format(Locale.US, "%.1f×", lastGeometricZoom) : "—";
+        String line1 = String.format(Locale.US, "REQ %.1f× • CAM %.1f× • GEO %s", lastRequestedZoom, lastResultZoom, geoVal);
+        String line2 = "4:3 NATIVO • " + (wideSupported ? "0,5× ATIVO" : "0,5× NÃO EXPOSTO") + " • PARES B: " + diagnosticStore.getTotalPairsStored();
+        fitTxt(c, line1, box.left + padX, pillTop + pillH + 28 * s, innerW, 18.5f * s, Color.WHITE, true);
+        if (pillTop + pillH + 56 * s <= box.bottom - 8 * s) {
+            fitTxt(c, line2, box.left + padX, pillTop + pillH + 54 * s, innerW, 18 * s, 0xFFD0D7E2, true);
+        }
+    }
+
+    private void drawMiniConfidenceBadge(Canvas c, float x, float y, float w, float h, String label, String state, float s) {
+        int col = confidenceAccentColor(state);
+        rounded(c, x, y, x + w, y + h, 12 * s, 0xFF121620);
+        strokeRound(c, x, y, x + w, y + h, 12 * s, 1.3f * s, col);
+        centerFit(c, label, x + w / 2f, y + h * 0.40f, w - 10 * s, 17.5f * s, WHITE_70, true);
+        centerFit(c, state, x + w / 2f, y + h * 0.80f, w - 10 * s, 18.5f * s, col, true);
+    }
+
+    private void drawViewfinderFrame(Canvas c, int w, int h, float s) {
+        GeometryMath.Viewport vp = GeometryMath.compute4x3Viewport(w, h);
+        float topBound = Math.max(ui.mini.bottom + 8 * s, vp.top + 6 * s);
+        float bottomBound = Math.min(ui.deckTop - 8 * s, vp.top + vp.height - 6 * s);
+        float l = vp.left + 8 * s, t = topBound;
+        float r = vp.left + vp.width - 8 * s, b = bottomBound;
+        if (b <= t + 80 * s) return;
+
+        // Subtle rule-of-thirds grid inside visible viewfinder
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(1f * s);
+        p.setColor(0x22FFFFFF);
+        float thirdW = (r - l) / 3f;
+        float thirdH = (b - t) / 3f;
+        c.drawLine(l + thirdW, t, l + thirdW, b, p);
+        c.drawLine(l + 2f * thirdW, t, l + 2f * thirdW, b, p);
+        c.drawLine(l, t + thirdH, r, t + thirdH, p);
+        c.drawLine(l, t + 2f * thirdH, r, t + 2f * thirdH, p);
+
+        // Precision optical corner brackets + center rangefinder crosshair
+        p.setStrokeWidth(2.6f * s);
+        p.setColor(0x88F5B041);
+        float corner = 24 * s;
+        c.drawLine(l, t, l + corner, t, p); c.drawLine(l, t, l, t + corner, p);
+        c.drawLine(r - corner, t, r, t, p); c.drawLine(r, t, r, t + corner, p);
+        c.drawLine(l, b - corner, l, b, p); c.drawLine(l, b, l + corner, b, p);
+        c.drawLine(r - corner, b, r, b, p); c.drawLine(r, b - corner, r, b, p);
+
+        float cx = (l + r) / 2f, cy = (t + b) / 2f;
+        p.setStrokeWidth(1.4f * s);
+        p.setColor(0x44FFFFFF);
+        c.drawLine(cx - 16 * s, cy, cx - 5 * s, cy, p);
+        c.drawLine(cx + 5 * s, cy, cx + 16 * s, cy, p);
+        c.drawLine(cx, cy - 16 * s, cx, cy - 5 * s, p);
+        c.drawLine(cx, cy + 5 * s, cx, cy + 16 * s, p);
+        p.setStyle(Paint.Style.FILL);
+    }
+
+    private void drawFocusReticle(Canvas c, float fx, float fy, float s) {
+        float rad = 42 * s;
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(2.8f * s);
+        p.setColor(0xFFFFD166);
+        c.drawRoundRect(fx - rad, fy - rad, fx + rad, fy + rad, 12 * s, 12 * s, p);
+        p.setStrokeWidth(1.6f * s);
+        c.drawLine(fx - rad - 8 * s, fy, fx - rad + 10 * s, fy, p);
+        c.drawLine(fx + rad - 10 * s, fy, fx + rad + 8 * s, fy, p);
+        c.drawLine(fx, fy - rad - 8 * s, fx, fy - rad + 10 * s, p);
+        c.drawLine(fx, fy + rad - 10 * s, fx, fy + rad + 8 * s, p);
+        p.setStyle(Paint.Style.FILL);
     }
 
     private String zoomString() {
@@ -430,25 +725,37 @@ class UltraCameraView extends ViewGroup {
     }
 
     private String zoomDomain() {
-        if (zoom < 0.99f && wideSupported) return "ULTRAWIDE REAL";
-        return String.format(Locale.US, "CAMERA2 %.1f–%.1f×", Math.min(1f, minHardware), Math.max(1f, maxHardware));
+        if (zoom < 0.99f && wideSupported) return "ULTRAWIDE";
+        return String.format(Locale.US, "CAM %.0f–%.0f×", Math.max(1f, minHardware), Math.max(1f, maxHardware));
     }
 
     private void drawMiniMap(Canvas c, int w, float s) {
         RectF box = ui.mini;
-        rounded(c, box.left, box.top, box.right, box.bottom, 14 * s, 0xD0000000);
-        strokeRound(c, box.left, box.top, box.right, box.bottom, 14 * s, 1.5f * s, 0xCCFFFFFF);
-        RectF image = new RectF(box.left + 4 * s, box.top + 4 * s, box.right - 4 * s, box.bottom - 4 * s);
+        rounded(c, box.left, box.top, box.right, box.bottom, 18 * s, 0xE60A0C10);
+        strokeRound(c, box.left, box.top, box.right, box.bottom, 18 * s, 1.8f * s, 0x88F5B041);
+
+        float footerH = 38 * s;
+        RectF image = new RectF(box.left + 6 * s, box.top + 6 * s, box.right - 6 * s, box.bottom - footerH - 4 * s);
+        rounded(c, image.left, image.top, image.right, image.bottom, 12 * s, 0xFF141820);
         if (miniBitmap != null && !miniBitmap.isRecycled()) {
             Rect src = new Rect(0, 0, miniBitmap.getWidth(), miniBitmap.getHeight());
             c.drawBitmap(miniBitmap, src, image, p);
         }
         RectF view = zoomViewRect(image.left, image.top, image.right, image.bottom);
-        strokeRound(c, view.left, view.top, view.right, view.bottom, 3 * s, 2 * s, Color.WHITE);
-        p.setColor(0xFFFFFFFF); p.setStrokeWidth(1.2f * s);
-        c.drawLine(image.centerX() - 7 * s, image.centerY(), image.centerX() + 7 * s, image.centerY(), p);
-        c.drawLine(image.centerX(), image.centerY() - 7 * s, image.centerX(), image.centerY() + 7 * s, p);
-        txt(c, miniInSession ? "CAMPO REAL • " + (zoomConfidence == ZoomConfidence.TRUSTED_RATIO || zoomConfidence == ZoomConfidence.TRUSTED_CROP_ONLY ? zoomString() : "FOV NOMINAL") : "MAPA OFF", box.left + 9 * s, box.bottom + 17 * s, 10 * s, WHITE_92, true);
+        strokeRound(c, view.left, view.top, view.right, view.bottom, 4 * s, 2.2f * s, 0xFFFFD166);
+        p.setColor(0xCCFFFFFF);
+        p.setStrokeWidth(1.4f * s);
+        c.drawLine(image.centerX() - 8 * s, image.centerY(), image.centerX() + 8 * s, image.centerY(), p);
+        c.drawLine(image.centerX(), image.centerY() - 8 * s, image.centerX(), image.centerY() + 8 * s, p);
+
+        // Dedicated high-contrast footer inside the minimap card so text is large and never overlaps outside
+        RectF footer = new RectF(box.left + 5 * s, box.bottom - footerH, box.right - 5 * s, box.bottom - 5 * s);
+        rounded(c, footer.left, footer.top, footer.right, footer.bottom, 11 * s, 0xE6121620);
+        String miniLabel = miniInSession
+                ? (zoomConfidence == ZoomConfidence.TRUSTED_RATIO || zoomConfidence == ZoomConfidence.TRUSTED_CROP_ONLY
+                        ? "FOV • " + zoomString() : "FOV NOMINAL")
+                : "MAPA 1×";
+        centerFit(c, miniLabel, footer.centerX(), footer.centerY() + 6.5f * s, footer.width() - 10 * s, 18.5f * s, Color.WHITE, true);
     }
 
     private RectF zoomViewRect(float l, float t, float r, float b) {
@@ -486,7 +793,17 @@ class UltraCameraView extends ViewGroup {
 
     private float[] lensTargets() {
         float maxZ = Math.max(1f, maxHardware);
-        return new float[]{0.5f, 1.0f, Math.min(2.0f, maxZ), Math.min(6.0f, maxZ), maxZ};
+        if (maxZ >= 6.0f) {
+            return new float[]{0.5f, 1.0f, 2.0f, Math.min(5.0f, Math.round(maxZ * 0.5f)), maxZ};
+        }
+        if (maxZ >= 3.0f) {
+            return new float[]{0.5f, 1.0f, 1.5f, 2.5f, maxZ};
+        }
+        if (maxZ >= 1.8f) {
+            return new float[]{0.5f, 1.0f, 1.2f, 1.5f, maxZ};
+        }
+        // When maxHardware is 1.0x (or before camera opens), display 5 distinct optical stops with >1x stops disabled
+        return new float[]{0.5f, 1.0f, 2.0f, 4.0f, 8.0f};
     }
 
     private void drawLensPills(Canvas c, int w, float s) {
@@ -502,216 +819,412 @@ class UltraCameraView extends ViewGroup {
         for (int i = 0; i < lens.length; i++) {
             RectF r = ui.lens[i];
             boolean enabled = (i == 0) ? wideSupported : (targets[i] <= maxHardware + 0.01f);
-            boolean active = enabled && Math.abs(zoom - targets[i]) < (targets[i] < 1.5f ? 0.15f : 0.45f);
-            int bg = active ? 0xFFF7F7F7 : 0xB8141417;
-            if (!enabled) bg = 0x66141417;
-            rounded(c, r.left, r.top, r.right, r.bottom, 30 * s, bg);
-            center(c, lens[i], r.centerX(), r.top + 38 * s, 21 * s, active ? Color.BLACK : (enabled ? Color.WHITE : 0x88FFFFFF), true);
-        }
-        if (!wideSupported) {
-            RectF r = new RectF(28 * s, ui.lens[0].bottom + 8 * s, Math.min(w - 28 * s, 330 * s), ui.lens[0].bottom + 40 * s);
-            rounded(c, r.left, r.top, r.right, r.bottom, 16 * s, 0xB0000000);
-            txt(c, "0,5× não disponível neste aparelho", r.left + 13 * s, r.top + 22 * s, 12 * s, 0xDDFFFFFF, true);
+            boolean active = enabled && Math.abs(zoom - targets[i]) < (targets[i] < 1.5f ? 0.09f : 0.35f);
+            int bg = active ? 0xFFF5B041 : (enabled ? 0xE0151922 : 0x77101218);
+            rounded(c, r.left, r.top, r.right, r.bottom, 32 * s, bg);
+            strokeRound(c, r.left, r.top, r.right, r.bottom, 32 * s, active ? 2.2f * s : 1.3f * s,
+                    active ? 0xFFFFE082 : (enabled ? 0x48FFFFFF : 0x22FFFFFF));
+            centerFit(c, lens[i], r.centerX(), r.centerY() + 8.5f * s, r.width() - 14 * s, 23 * s,
+                    active ? 0xFF0A0C10 : (enabled ? Color.WHITE : 0x77FFFFFF), true);
         }
     }
 
     private void drawZoomBar(Canvas c, int w, int h, float s) {
-        float y = h - 354 * s;
-        txt(c, "ZOOM", 28 * s, y, 18 * s, Color.WHITE, true);
-        txt(c, zoomHudString(), w - 210 * s, y, 16 * s, WHITE_92, true);
-        // Never advertise 20x, 50x, or 100x without hardware declaration.
+        RectF card = ui.zoomArea;
+        boolean scrubbing = draggingZoomSlider || pinchDistance > 0;
+        rounded(c, card.left, card.top, card.right, card.bottom, 22 * s, 0xE411151E);
+        strokeRound(c, card.left, card.top, card.right, card.bottom, 22 * s, scrubbing ? 2.0f * s : 1.4f * s,
+                scrubbing ? 0x99F5B041 : 0x38FFFFFF);
+
         float maxZ = Math.max(1f, maxHardware);
+        double minSlider = wideSupported ? 0.5 : 1.0;
+        double maxSlider = Math.max(minSlider + 0.01, maxZ);
+        double lo = Math.log(minSlider), hi = Math.log(maxSlider);
+
         float[] candidateTicks = wideSupported
                 ? new float[]{0.5f, 1f, 2f, 4f, 6f, 8f, 10f}
                 : new float[]{1f, 2f, 3f, 4f, 6f, 8f, 10f};
         List<Float> ticks = new ArrayList<Float>();
+        float lastQ = -1f;
         for (float t : candidateTicks) {
-            if (t <= maxZ + 0.01f) ticks.add(t);
+            if (t <= maxZ + 0.01f) {
+                float q = (float) ((Math.log(Math.max(minSlider, t)) - lo) / (hi - lo));
+                if (lastQ < 0f || (q - lastQ >= 0.16f && q <= 0.82f)) {
+                    ticks.add(t);
+                    lastQ = q;
+                }
+            }
         }
-        if (ticks.isEmpty() || Math.abs(ticks.get(ticks.size() - 1) - maxZ) > 0.2f) {
+        if (ticks.isEmpty() || Math.abs(ticks.get(ticks.size() - 1) - maxZ) > 0.12f) {
             ticks.add(maxZ);
         }
-        float step = ticks.size() > 1 ? (w - 56 * s) / (float) (ticks.size() - 1) : 0f;
+
+        float trackLeft = ui.zoomTrack.left;
+        float trackRight = ui.zoomTrack.right;
+        float trackW = Math.max(1f, trackRight - trackLeft);
+        float trackY = ui.zoomTrack.centerY();
+
+        // Logarithmic tick labels aligned 1:1 with actual slider thumb positions
         for (int i = 0; i < ticks.size(); i++) {
             float v = ticks.get(i);
             String label = (v < 1f) ? "0,5×" : (Math.abs(v - Math.round(v)) < 0.05f ? Math.round(v) + "×" : String.format(Locale.US, "%.1f×", v));
-            boolean active = Math.abs(zoom - v) < (v < 2f ? 0.08f : 0.45f);
-            center(c, label, 28 * s + i * step, y + 32 * s, (active ? 17 : 15) * s, active ? Color.WHITE : WHITE_70, active);
+            boolean active = Math.abs(zoom - v) < (v < 2f ? 0.08f : 0.40f);
+            float tq = ticks.size() == 1 ? 0f : (float) ((Math.log(Math.max(minSlider, Math.min(maxSlider, v))) - lo) / (hi - lo));
+            float tx = trackLeft + tq * trackW;
+            centerFit(c, label, tx, card.top + 30 * s, 68 * s, (active ? 21f : 19f) * s, active ? 0xFFFFD166 : WHITE_92, true);
         }
-        p.setColor(0xCCFFFFFF);
-        c.drawRoundRect(28 * s, y + 55 * s, w - 28 * s, y + 62 * s, 4 * s, 4 * s, p);
-        double minSlider = wideSupported ? 0.5 : 1.0;
-        double lo = Math.log(minSlider), hi = Math.log(Math.max(minSlider + 0.01, maxZ));
-        double clampedZoom = Math.max(minSlider, Math.min(Math.max(minSlider + 0.01, maxZ), zoom));
-        double q = (Math.log(clampedZoom) - lo) / (hi - lo);
-        p.setColor(Color.WHITE);
-        c.drawCircle(28 * s + (float) q * (w - 56 * s), y + 58 * s, 11 * s, p);
-        txt(c, wideSupported ? "0,5×" : "1×", 28 * s, y + 92 * s, 13 * s, WHITE_70, false);
-        txt(c, String.format(Locale.US, "%.1f×", maxZ), w - 70 * s, y + 92 * s, 13 * s, WHITE_70, false);
-        center(c, "A/B/C: " + diagnosticGlobalState(), w / 2f, y + 120 * s, 13 * s, 0xCCFFFFFF, false);
+
+        // Precision optical dial track + graduated Vernier ticks
+        rounded(c, trackLeft - 6 * s, trackY - 12 * s, trackRight + 6 * s, trackY + 12 * s, 12 * s, 0xFF0A0D13);
+        p.setColor(0x44FFFFFF);
+        c.drawRoundRect(trackLeft, trackY - 3.0f * s, trackRight, trackY + 3.0f * s, 4 * s, 4 * s, p);
+        p.setStrokeWidth(1.5f * s);
+        for (int i = 0; i <= 28; i++) {
+            float gx = trackLeft + (trackW * i) / 28f;
+            float gh = (i % 4 == 0) ? 9 * s : 5 * s;
+            p.setColor(i % 4 == 0 ? 0x88FFFFFF : 0x3DFFFFFF);
+            c.drawLine(gx, trackY - gh, gx, trackY + gh, p);
+        }
+
+        double clampedZoom = Math.max(minSlider, Math.min(maxSlider, zoom));
+        float q = ticks.size() == 1 ? 0f : (float) ((Math.log(clampedZoom) - lo) / (hi - lo));
+        float thumbX = trackLeft + q * trackW;
+
+        p.setColor(0xFFF5B041);
+        c.drawRoundRect(trackLeft, trackY - 3.0f * s, thumbX, trackY + 3.0f * s, 4 * s, 4 * s, p);
+        p.setColor(0xFFFFD166);
+        c.drawCircle(thumbX, trackY, 14 * s, p);
+        p.setColor(0xFF0A0C10);
+        c.drawCircle(thumbX, trackY, 6 * s, p);
+
+        // Bottom caption row inside the zoom card with collision-proof bounds
+        float captionY = card.bottom - 13 * s;
+        String minLabel = wideSupported ? "MIN 0,5×" : "MIN 1,0×";
+        String maxLabel = String.format(Locale.US, "MAX %.1f×", maxZ);
+        fitTxt(c, minLabel, card.left + 20 * s, captionY, 110 * s, 18 * s, WHITE_70, true);
+        centerFit(c, "TOQUE NO VISOR P/ FOCAR", card.centerX(), captionY, card.width() - 270 * s, 18 * s, 0xFFD8E0EB, true);
+        rightTxt(c, maxLabel, card.right - 20 * s, captionY, 120 * s, 18 * s, WHITE_70, true);
     }
 
     private void drawBottom(Canvas c, int w, int h, float s) {
         float cy = ui.shutter.centerY();
-        drawFlash(c, ui.flash.centerX(), cy, s);
+        drawFlash(c, ui.flash, s);
         drawShutter(c, ui.shutter.centerX(), cy, s);
-        drawMode(c, ui.mode.centerX(), cy, s);
-        center(c, flashLabel(), ui.flash.centerX(), ui.flash.bottom + 18 * s, 14 * s, Color.WHITE, true);
-        center(c, "FOTO", ui.shutter.centerX(), ui.shutter.bottom + 18 * s, 16 * s, Color.WHITE, true);
-        center(c, MODES[mode.ordinal()], ui.mode.centerX(), ui.mode.bottom + 18 * s, 14 * s, Color.WHITE, true);
-        if (mode == Mode.NIGHT) {
-            rounded(c, w / 2f - 70 * s, cy - 88 * s, w / 2f + 70 * s, cy - 56 * s, 16 * s, 0xCCFFFFFF);
-            center(c, "VISÃO NOTURNA", w / 2f, cy - 65 * s, 12 * s, Color.BLACK, true);
-        }
-        txt(c, "Toque para focar", 28 * s, h - 24 * s, 13 * s, WHITE_70, false);
-        rounded(c, ui.logExport.left, ui.logExport.top, ui.logExport.right, ui.logExport.bottom, 22 * s, 0xAA000000);
-        center(c, "LOG", ui.logExport.centerX(), ui.logExport.bottom - 16 * s, 13 * s, Color.WHITE, true);
-        rounded(c, ui.camera.left, ui.camera.top, ui.camera.right, ui.camera.bottom, 22 * s, 0xAA000000);
-        center(c, "CAM", ui.camera.centerX(), ui.camera.bottom - 16 * s, 14 * s, Color.WHITE, true);
-        rounded(c, ui.info.left, ui.info.top, ui.info.right, ui.info.bottom, 25 * s, 0xAA000000);
-        center(c, "i", ui.info.centerX(), ui.info.bottom - 14 * s, 24 * s, Color.WHITE, true);
+        drawMode(c, ui.mode, s);
+
+        // Bottom symmetric Pro Utility Row: LOG, CÂMERAS, DIAGNÓSTICO
+        drawUtilityPill(c, ui.logExport, "EXPORTAR LOG", false, s);
+        drawUtilityPill(c, ui.camera, "CÂMERAS (" + publicCameraRecords.size() + ")", showCameraMenu, s);
+        drawUtilityPill(c, ui.info, "DIAGNÓSTICO i", showInfo, s);
+    }
+
+    private void drawUtilityPill(Canvas c, RectF r, String label, boolean active, float s) {
+        rounded(c, r.left, r.top, r.right, r.bottom, 22 * s, active ? 0xFFF5B041 : 0xE0141821);
+        strokeRound(c, r.left, r.top, r.right, r.bottom, 22 * s, 1.4f * s, active ? 0xFFFFE082 : 0x38FFFFFF);
+        centerFit(c, label, r.centerX(), r.centerY() + 7 * s, r.width() - 18 * s, 19 * s, active ? 0xFF0A0C10 : Color.WHITE, true);
     }
 
     private String flashLabel() {
         return flashMode == 0 ? "FLASH OFF" : flashMode == 1 ? "FLASH AUTO" : "FLASH ON";
     }
 
-    private void drawFlash(Canvas c, float x, float y, float s) {
-        rounded(c, x - 52 * s, y - 48 * s, x + 52 * s, y + 48 * s, 26 * s, flashMode == 0 ? 0x70000000 : 0xFFF2F2F2);
+    private void drawFlash(Canvas c, RectF box, float s) {
+        boolean active = flashMode != 0;
+        rounded(c, box.left, box.top, box.right, box.bottom, 24 * s, active ? 0xFFF5B041 : 0xE0141821);
+        strokeRound(c, box.left, box.top, box.right, box.bottom, 24 * s, 1.5f * s, active ? 0xFFFFE082 : 0x38FFFFFF);
+        int fg = active ? 0xFF0A0C10 : Color.WHITE;
+        float iconX = box.centerX();
+        float iconY = box.top + 28 * s;
         p.setStyle(Paint.Style.STROKE);
-        p.setStrokeWidth(4 * s);
-        p.setColor(flashMode == 0 ? Color.WHITE : Color.BLACK);
+        p.setStrokeWidth(3.0f * s);
+        p.setColor(fg);
         Path q = new Path();
-        q.moveTo(x + 7 * s, y - 30 * s); q.lineTo(x - 13 * s, y + 3 * s); q.lineTo(x + 2 * s, y + 3 * s);
-        q.lineTo(x - 7 * s, y + 30 * s); q.lineTo(x + 19 * s, y - 7 * s); q.lineTo(x + 4 * s, y - 7 * s); q.close();
-        c.drawPath(q, p); p.setStyle(Paint.Style.FILL);
+        q.moveTo(iconX + 5 * s, iconY - 14 * s);
+        q.lineTo(iconX - 8 * s, iconY + 2 * s);
+        q.lineTo(iconX + 1 * s, iconY + 2 * s);
+        q.lineTo(iconX - 4 * s, iconY + 14 * s);
+        q.lineTo(iconX + 10 * s, iconY - 2 * s);
+        q.lineTo(iconX + 2 * s, iconY - 2 * s);
+        q.close();
+        c.drawPath(q, p);
+        p.setStyle(Paint.Style.FILL);
+        centerFit(c, flashLabel(), box.centerX(), box.bottom - 15 * s, box.width() - 18 * s, 19.5f * s, fg, true);
     }
 
     private void drawShutter(Canvas c, float x, float y, float s) {
-        p.setColor(Color.WHITE); c.drawCircle(x, y, 54 * s, p);
-        p.setStyle(Paint.Style.STROKE); p.setStrokeWidth(4 * s); p.setColor(0xFF111111); c.drawCircle(x, y, 42 * s, p); p.setStyle(Paint.Style.FILL);
-        if (busy) { p.setColor(0xFF111111); c.drawRoundRect(x - 13 * s, y - 13 * s, x + 13 * s, y + 13 * s, 4 * s, 4 * s, p); }
+        p.setColor(0xFFF8FAFC);
+        c.drawCircle(x, y, 55 * s, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(3.5f * s);
+        p.setColor(0xFFF5B041);
+        c.drawCircle(x, y, 51 * s, p);
+        p.setStrokeWidth(4.2f * s);
+        p.setColor(0xFF0E1015);
+        c.drawCircle(x, y, 43 * s, p);
+        p.setStyle(Paint.Style.FILL);
+        if (busy) {
+            p.setColor(0xFF0E1015);
+            c.drawRoundRect(x - 14 * s, y - 14 * s, x + 14 * s, y + 14 * s, 5 * s, 5 * s, p);
+        } else {
+            centerFit(c, mode == Mode.NIGHT ? "NIGHT" : "FOTO", x, y + 7 * s, 68 * s, 18.5f * s, 0xFF0E1015, true);
+        }
     }
 
-    private void drawMode(Canvas c, float x, float y, float s) {
-        rounded(c, x - 52 * s, y - 48 * s, x + 52 * s, y + 48 * s, 26 * s, 0x85000000);
-        center(c, "MODO", x, y - 3 * s, 12 * s, Color.WHITE, true);
-        center(c, MODES[mode.ordinal()], x, y + 24 * s, 13 * s, Color.WHITE, true);
+    private void drawMode(Canvas c, RectF box, float s) {
+        rounded(c, box.left, box.top, box.right, box.bottom, 24 * s, 0xE0141821);
+        strokeRound(c, box.left, box.top, box.right, box.bottom, 24 * s, 1.5f * s, 0x55F5B041);
+        centerFit(c, "MODO", box.centerX(), box.top + 32 * s, box.width() - 18 * s, 18 * s, WHITE_70, true);
+        centerFit(c, MODES[mode.ordinal()], box.centerX(), box.bottom - 16 * s, box.width() - 18 * s, 23 * s, 0xFFFFD166, true);
     }
 
     private void drawModeSheet(Canvas c, float s) {
         int w = getWidth(), h = getHeight();
-        rounded(c, 18 * s, 108 * s, w - 18 * s, h - 52 * s, 30 * s, 0xF20B0B0D);
-        txt(c, "MODO DE CAPTURA", 38 * s, 151 * s, 27 * s, Color.WHITE, true);
-        float y = 174 * s;
+        rounded(c, 0, 0, w, h, 0, 0xC4030508);
+        RectF sheet = ui.modeSheet;
+        rounded(c, sheet.left, sheet.top, sheet.right, sheet.bottom, 28 * s, 0xFA0A0C12);
+        strokeRound(c, sheet.left, sheet.top, sheet.right, sheet.bottom, 28 * s, 1.8f * s, 0x66F5B041);
+        fitTxt(c, "MODO DE CAPTURA", sheet.left + 24 * s, sheet.top + 52 * s, sheet.width() - 48 * s, 28 * s, Color.WHITE, true);
+        fitTxt(c, "Selecione o pipeline computacional da câmera", sheet.left + 24 * s, sheet.top + 84 * s, sheet.width() - 48 * s, 19 * s, WHITE_70, false);
         for (int i = 0; i < MODES.length; i++) {
+            RectF item = ui.modeItems[i];
             boolean active = i == mode.ordinal();
-            rounded(c, 30 * s, y, w - 30 * s, y + 72 * s, 22 * s, active ? 0xFFF4F4F4 : 0x331F1F22);
-            txt(c, MODES[i], 52 * s, y + 31 * s, 21 * s, active ? Color.BLACK : Color.WHITE, true);
-            txt(c, DESCS[i], 52 * s, y + 55 * s, 13 * s, active ? 0xFF333333 : 0xCCFFFFFF, false);
-            y += 79 * s;
+            rounded(c, item.left, item.top, item.right, item.bottom, 20 * s, active ? 0xFFF5B041 : 0xE0161A24);
+            strokeRound(c, item.left, item.top, item.right, item.bottom, 20 * s, 1.4f * s, active ? 0xFFFFE082 : 0x38FFFFFF);
+            fitTxt(c, MODES[i], item.left + 22 * s, item.top + item.height() * 0.44f, item.width() - 44 * s, 23 * s, active ? 0xFF0A0C10 : Color.WHITE, true);
+            fitTxt(c, DESCS[i], item.left + 22 * s, item.top + item.height() * 0.80f, item.width() - 44 * s, 18.5f * s, active ? 0xFF1E2430 : 0xFFD8E0EB, false);
         }
-        txt(c, "Toque fora para fechar", 38 * s, h - 76 * s, 12 * s, WHITE_70, false);
+        centerFit(c, "TOQUE FORA PARA FECHAR", w / 2f, sheet.bottom - 26 * s, sheet.width() - 40 * s, 19 * s, 0xFFFFD166, true);
     }
 
     private void drawCameraMenu(Canvas c, float s) {
         int w = getWidth(), h = getHeight();
-        rounded(c, 14 * s, 48 * s, w - 14 * s, h - 18 * s, 26 * s, 0xF20B0B0D);
-        txt(c, "CÂMERAS EXPOSTAS", 32 * s, 88 * s, 25 * s, Color.WHITE, true);
-        txt(c, "Toque em uma câmera para abrir diretamente", 34 * s, 112 * s, 12 * s, WHITE_70, false);
-        float y = 132 * s;
-        int shown = Math.min(8, publicCameraRecords.size());
-        if (shown == 0) { txt(c, "Nenhuma câmera pública encontrada", 34 * s, y + 25 * s, 14 * s, WHITE_70, false); return; }
+        rounded(c, 0, 0, w, h, 0, 0xC4030508);
+        RectF sheet = ui.cameraSheet;
+        rounded(c, sheet.left, sheet.top, sheet.right, sheet.bottom, 28 * s, 0xFA0A0C12);
+        strokeRound(c, sheet.left, sheet.top, sheet.right, sheet.bottom, 28 * s, 1.8f * s, 0x66F5B041);
+        fitTxt(c, "CÂMERAS EXPOSTAS (CAMERA2)", sheet.left + 22 * s, sheet.top + 48 * s, sheet.width() - 44 * s, 27 * s, Color.WHITE, true);
+        fitTxt(c, "Toque em uma câmera para abrir diretamente em 1,0×", sheet.left + 22 * s, sheet.top + 80 * s, sheet.width() - 44 * s, 18.5f * s, WHITE_70, false);
+        int shown = Math.min(ui.cameraItems.length, publicCameraRecords.size());
+        if (shown == 0) {
+            fitTxt(c, "Nenhuma câmera pública encontrada", sheet.left + 22 * s, sheet.top + 140 * s, sheet.width() - 44 * s, 21 * s, WHITE_70, false);
+            centerFit(c, "TOQUE FORA PARA FECHAR", w / 2f, sheet.bottom - 26 * s, sheet.width() - 40 * s, 18.5f * s, 0xFFFFD166, true);
+            return;
+        }
         for (int i = 0; i < shown; i++) {
             CameraRecord r = publicCameraRecords.get(i);
+            RectF item = ui.cameraItems[i];
             boolean active = r.id != null && r.id.equals(cameraId);
-            rounded(c, 28 * s, y, w - 28 * s, y + 58 * s, 18 * s, active ? 0xFFF4F4F4 : 0x331F1F22);
+            rounded(c, item.left, item.top, item.right, item.bottom, 20 * s, active ? 0xFFF5B041 : 0xE0161A24);
+            strokeRound(c, item.left, item.top, item.right, item.bottom, 20 * s, 1.4f * s, active ? 0xFFFFE082 : 0x38FFFFFF);
             String face = r.facing == CameraCharacteristics.LENS_FACING_BACK ? "TRASEIRA" :
                     r.facing == CameraCharacteristics.LENS_FACING_FRONT ? "FRONTAL" : "EXTERNA";
-            txt(c, "ID " + r.id, 46 * s, y + 25 * s, 19 * s, active ? Color.BLACK : Color.WHITE, true);
-            txt(c, face + (r.logical ? " • LÓGICA" : ""), 128 * s, y + 23 * s, 11 * s, active ? 0xFF333333 : WHITE_70, true);
-            txt(c, r.pixels == null ? "res ?" : r.pixels.getWidth() + "×" + r.pixels.getHeight(), 128 * s, y + 42 * s, 10 * s, active ? 0xFF555555 : WHITE_70, false);
+            int primaryColor = active ? 0xFF0A0C10 : Color.WHITE;
+            int secondaryColor = active ? 0xFF1E2430 : 0xFFD8E0EB;
+            fitTxt(c, "ID " + r.id + " • " + face + (r.logical ? " • LÓGICA" : ""), item.left + 20 * s, item.top + item.height() * 0.44f, item.width() - 40 * s, 21.5f * s, primaryColor, true);
+            String res = r.pixels == null ? "res ?" : r.pixels.getWidth() + "×" + r.pixels.getHeight();
             String fov = r.fov > 0 ? String.format(Locale.US, "FOV %.1f°", Math.toDegrees(r.fov)) : "FOV ?";
-            txt(c, fov + " • " + String.format(Locale.US, "zoom %.1f–%.1fx", r.range.min, r.range.max), 285 * s, y + 32 * s, 10 * s, active ? 0xFF333333 : WHITE_70, false);
-            y += 66 * s;
+            String detailLine = res + " • " + fov + " • " + String.format(Locale.US, "zoom %.1f–%.1f×", r.range.min, r.range.max);
+            fitTxt(c, detailLine, item.left + 20 * s, item.top + item.height() * 0.80f, item.width() - 40 * s, 18.5f * s, secondaryColor, false);
         }
-        if (publicCameraRecords.size() > shown) txt(c, "+ " + (publicCameraRecords.size() - shown) + " câmera(s) não exibida(s)", 34 * s, y + 10 * s, 11 * s, WHITE_70, false);
-        txt(c, "i = diagnóstico detalhado", 34 * s, h - 54 * s, 11 * s, WHITE_70, false);
+        centerFit(c, "TOQUE FORA PARA FECHAR • USE 'DIAGNÓSTICO i' PARA TELEMETRIA", w / 2f, sheet.bottom - 24 * s, sheet.width() - 40 * s, 18.5f * s, 0xFFFFD166, true);
     }
 
     private void drawInfo(Canvas c, float s) {
         int w = getWidth(), h = getHeight();
-        rounded(c, 10 * s, 42 * s, w - 10 * s, h - 18 * s, 24 * s, 0xF20B0B0D);
-        txt(c, "ULTRAZOOM • IMAGE ENGINE 12.4", 26 * s, 78 * s, 21 * s, Color.WHITE, true);
-        txt(c, "PIPELINE CAMERA2 + PROCESSAMENTO DE IMAGEM", 28 * s, 101 * s, 11 * s, WHITE_70, true);
-        float y = 130 * s;
-        infoRow(c, "Câmera ativa", cameraId == null ? "—" : cameraId, y, s); y += 25 * s;
-        infoRow(c, "Principal", mainCameraId == null ? "—" : mainCameraId, y, s); y += 25 * s;
-        infoRow(c, "Seleção", cameraSelectionReason, y, s); y += 25 * s;
-        infoRow(c, "Zoom", zoomDiagnostics, y, s); y += 25 * s;
-        infoRow(c, "JPEG", sizeString(jpegSize) + " • max " + sizeString(largestJpegSize), y, s); y += 25 * s;
-        infoRow(c, "Preview", sizeString(previewSize), y, s); y += 25 * s;
-        infoRow(c, "Zoom", String.format(Locale.US, "REQ %.2f× • CAM %.2f× • GEO %s • %s", lastRequestedZoom, lastResultZoom,
-                zoomConfidence == ZoomConfidence.TRUSTED_CROP_ONLY ? String.format(Locale.US, "%.2f×", lastGeometricZoom) :
-                (zoomConfidence == ZoomConfidence.TRUSTED_RATIO ? String.format(Locale.US, "%.2f×", lastResultZoom) : "—"), zoomConfidenceLabel()), y, s); y += 25 * s;
-        infoRow(c, "Geometria", streamGeometryDiagnostics, y, s); y += 25 * s;
-        infoRow(c, "Modo preview", "FRAME NATIVO 4:3 • SEM DISTORÇÃO", y, s); y += 25 * s;
-        infoRow(c, "0,5×", wideSupported ? "EVIDÊNCIA DE ULTRAWIDE" : "NÃO EXPOSTO PELA CAMERA2", y, s); y += 25 * s;
-        infoRow(c, "Layout", layoutValid ? "SEM SOBREPOSIÇÃO" : "FALHA", y, s); y += 25 * s;
-        infoRow(c, "Imagem", imageEngineDiagnostics, y, s); y += 26 * s;
-        infoRow(c, "Auto-diagnóstico", diagnosticSummary(), y, s); y += 26 * s;
-        txt(c, "ORIENTAÇÃO", 26 * s, y, 11 * s, 0xAAFFFFFF, true); y += 17 * s;
-        drawDiagnosticText(c, orientationDiagnostics + " • " + previewSelectionDiagnostic, 26 * s, y, w - 52 * s, 10 * s); y += 34 * s;
-        drawDiagnosticText(c, "Resultado: REQ=" + String.format(Locale.US, "%.3f×", lastRequestedZoom) + " • CAM=" + String.format(Locale.US, "%.3f×", lastResultZoom) + " • GEO=" + (zoomConfidence == ZoomConfidence.TRUSTED_RATIO || zoomConfidence == ZoomConfidence.TRUSTED_CROP_ONLY ? String.format(Locale.US, "%.3f×", lastGeometricZoom) : "—") + " • estado=" + zoomConfidenceLabel() + " • crop=" + cropString(lastResultCrop) + " • physical=" + lastResultPhysicalId + " • focal=" + lastFocalResult, 26 * s, y, w - 52 * s, 9.5f * s); y += 27 * s;
-        txt(c, "DISPOSITIVO / CAPACIDADES", 26 * s, y, 11 * s, 0xAAFFFFFF, true); y += 17 * s;
-        drawDiagnosticText(c, detailedDiagnostics, 26 * s, y, w - 52 * s, 9.5f * s);
-        y = h - 155 * s;
-        txt(c, "OIS / EIS", 26 * s, y, 11 * s, 0xAAFFFFFF, true); y += 16 * s;
-        drawDiagnosticText(c, stabilizationDiagnostics, 26 * s, y, w - 52 * s, 9.5f * s); y += 29 * s;
-        txt(c, "FOCO / EXPOSIÇÃO", 26 * s, y, 11 * s, 0xAAFFFFFF, true); y += 16 * s;
-        drawDiagnosticText(c, focusDiagnostics, 26 * s, y, w - 52 * s, 9.5f * s);
-        rounded(c, 26 * s, h - 78 * s, 246 * s, h - 43 * s, 16 * s, 0x66333333);
-        center(c, "FRAME NATIVO • 4:3", 136 * s, h - 57 * s, 11 * s, Color.WHITE, true);
-        txt(c, "BUILD " + BUILD_ID + " • " + layoutDiagnostic, 26 * s, h - 25 * s, 8.8f * s, WHITE_70, false);
-        txt(c, "Toque fora para fechar", w - 165 * s, h - 25 * s, 9.5f * s, WHITE_70, false);
+        rounded(c, 0, 0, w, h, 0, 0xCC030508);
+        RectF sheet = ui.infoSheet;
+        rounded(c, sheet.left, sheet.top, sheet.right, sheet.bottom, 28 * s, 0xFA090B10);
+        strokeRound(c, sheet.left, sheet.top, sheet.right, sheet.bottom, 28 * s, 1.8f * s, 0x66F5B041);
+
+        float cardLeft = 28 * s, cardRight = w - 28 * s, cardW = cardRight - cardLeft;
+        fitTxt(c, "ULTRAZOOM 12.4 • DIAGNÓSTICO", cardLeft, sheet.top + 46 * s, cardW, 27 * s, Color.WHITE, true);
+        fitTxt(c, "BUILD " + BUILD_ID + " • LAYOUT " + (layoutValid ? "SEM SOBREPOSIÇÃO" : layoutDiagnostic), cardLeft, sheet.top + 76 * s, cardW, 18.5f * s, 0xFFFFD166, true);
+
+        float topY = sheet.top + 92 * s;
+        float bottomY = ui.infoClose.top - 12 * s;
+        float availH = Math.max(400 * s, bottomY - topY);
+        float gap = 10 * s;
+
+        // Proportional heights for the 4 telemetry cards so they always fit any screen height cleanly
+        float c1H = Math.max(136 * s, availH * 0.23f);
+        float c2H = Math.max(168 * s, availH * 0.27f);
+        float c3H = Math.max(168 * s, availH * 0.27f);
+        float y = topY;
+
+        // CARD 1: Matriz de Confiança A / B / C
+        float c1Bottom = y + c1H;
+        rounded(c, cardLeft, y, cardRight, c1Bottom, 20 * s, 0xEB131722);
+        strokeRound(c, cardLeft, y, cardRight, c1Bottom, 20 * s, 1.4f * s, 0x38FFFFFF);
+        String globalSt = diagnosticGlobalState();
+        fitTxt(c, "MATRIZ DE CONFIANÇA A / B / C", cardLeft + 18 * s, y + 29 * s, cardW - 220 * s, 18.5f * s, 0xFFFFD166, true);
+        rightTxt(c, "GLOBAL: " + globalSt, cardRight - 18 * s, y + 29 * s, 200 * s, 18.5f * s, confidenceAccentColor(globalSt), true);
+
+        float pillGap = 10 * s;
+        float pillW = (cardW - 36 * s - 2 * pillGap) / 3f;
+        float boxTop = y + 38 * s;
+        float boxH = Math.max(54 * s, c1H - 72 * s);
+        drawConfidenceBox(c, cardLeft + 18 * s, boxTop, pillW, boxH, "A • DECLARADO", mapLayerAState().name(), s);
+        drawConfidenceBox(c, cardLeft + 18 * s + pillW + pillGap, boxTop, pillW, boxH, "B • OBSERVADO", diagnosticStore.getLayerBState().name(), s);
+        drawConfidenceBox(c, cardLeft + 18 * s + 2 * (pillW + pillGap), boxTop, pillW, boxH, "C • INFERIDO", diagnosticStore.getLayerCState().name(), s);
+
+        String bStats = "Pares B: " + diagnosticStore.getTotalPairsStored() +
+                " • Confirmados: " + diagnosticStore.getConfirmedLevelsCount() +
+                " • Amostras: " + diagnosticStore.getTotalSamples();
+        fitTxt(c, bStats, cardLeft + 18 * s, c1Bottom - 12 * s, cardW - 36 * s, 18 * s, WHITE_92, false);
+        y = c1Bottom + gap;
+
+        // CARD 2: Telemetria de Zoom & Geometria 4:3
+        float c2Bottom = y + c2H;
+        rounded(c, cardLeft, y, cardRight, c2Bottom, 20 * s, 0xEB131722);
+        strokeRound(c, cardLeft, y, cardRight, c2Bottom, 20 * s, 1.4f * s, 0x38FFFFFF);
+        fitTxt(c, "GEOMETRIA 4:3 & TELEMETRIA DE ZOOM", cardLeft + 18 * s, y + 28 * s, cardW - 36 * s, 18.5f * s, 0xFFFFD166, true);
+        float rowStep2 = (c2H - 42 * s) / 5f;
+        float ry = y + 34 * s + rowStep2 * 0.78f;
+        String geoVal = (zoomConfidence == ZoomConfidence.TRUSTED_CROP_ONLY || zoomConfidence == ZoomConfidence.TRUSTED_RATIO)
+                ? String.format(Locale.US, "%.2f×", lastGeometricZoom) : "—";
+        infoRow(c, "REQ / CAM / GEO", String.format(Locale.US, "%.2f× / %.2f× / %s", lastRequestedZoom, lastResultZoom, geoVal), ry, cardW, s); ry += rowStep2;
+        infoRow(c, "Estado Camada A", zoomConfidenceLabel(), ry, cardW, s); ry += rowStep2;
+        infoRow(c, "Faixa Camera2", zoomDiagnostics, ry, cardW, s); ry += rowStep2;
+        infoRow(c, "Crop SCALER", cropString(lastResultCrop), ry, cardW, s); ry += rowStep2;
+        infoRow(c, "Ultrawide 0,5×", wideSupported ? "EVIDÊNCIA COMPROVADA" : "NÃO EXPOSTO PELA CAMERA2", ry, cardW, s);
+        y = c2Bottom + gap;
+
+        // CARD 3: Sensor, Óptica & Estabilização
+        float c3Bottom = y + c3H;
+        rounded(c, cardLeft, y, cardRight, c3Bottom, 20 * s, 0xEB131722);
+        strokeRound(c, cardLeft, y, cardRight, c3Bottom, 20 * s, 1.4f * s, 0x38FFFFFF);
+        fitTxt(c, "SENSOR, ÓPTICA & ESTABILIZAÇÃO", cardLeft + 18 * s, y + 28 * s, cardW - 36 * s, 18.5f * s, 0xFFFFD166, true);
+        float rowStep3 = (c3H - 42 * s) / 5f;
+        ry = y + 34 * s + rowStep3 * 0.78f;
+        infoRow(c, "Câmera Ativa", (cameraId == null ? "—" : "ID " + cameraId) + " (Principal: " + (mainCameraId == null ? "—" : mainCameraId) + ")", ry, cardW, s); ry += rowStep3;
+        infoRow(c, "JPEG / Preview", sizeString(jpegSize) + " • Preview " + sizeString(previewSize), ry, cardW, s); ry += rowStep3;
+        infoRow(c, "Físico / Focal", lastResultPhysicalId + " • " + lastFocalResult, ry, cardW, s); ry += rowStep3;
+        infoRow(c, "OIS / EIS", stabilizationDiagnostics, ry, cardW, s); ry += rowStep3;
+        infoRow(c, "Physical IDs", physicalIdsDiagnostics, ry, cardW, s);
+        y = c3Bottom + gap;
+
+        // CARD 4: Autofoco, Exposição & Motor Computacional
+        float c4Bottom = bottomY;
+        if (c4Bottom > y + 76 * s) {
+            rounded(c, cardLeft, y, cardRight, c4Bottom, 20 * s, 0xEB131722);
+            strokeRound(c, cardLeft, y, cardRight, c4Bottom, 20 * s, 1.4f * s, 0x38FFFFFF);
+            fitTxt(c, "AUTOFOCO, EXPOSIÇÃO & MOTOR DE IMAGEM", cardLeft + 18 * s, y + 28 * s, cardW - 36 * s, 18.5f * s, 0xFFFFD166, true);
+            float c4H = c4Bottom - y;
+            float rowStep4 = (c4H - 42 * s) / 3f;
+            ry = y + 34 * s + rowStep4 * 0.78f;
+            infoRow(c, "Motor Imagem", imageEngineDiagnostics, ry, cardW, s); ry += rowStep4;
+            infoRow(c, "Autofoco (AF)", focusDiagnostics, ry, cardW, s); ry += rowStep4;
+            infoRow(c, "Orientação", orientationDiagnostics, ry, cardW, s);
+        }
+
+        // Footer close button
+        RectF closeBtn = ui.infoClose;
+        rounded(c, closeBtn.left, closeBtn.top, closeBtn.right, closeBtn.bottom, 22 * s, 0xFFF5B041);
+        centerFit(c, "TOQUE PARA VOLTAR AO VISOR", closeBtn.centerX(), closeBtn.centerY() + 7 * s, closeBtn.width() - 24 * s, 20 * s, 0xFF0A0C10, true);
     }
 
-    private void drawDiagnosticText(Canvas c, String value, float x, float y, float width, float size) {
-        String[] lines = value == null ? new String[]{"—"} : value.split("\\n");
-        int count = Math.min(lines.length, 12);
-        float lineH = Math.max(13f, size * 1.55f);
-        for (int i = 0; i < count; i++) txt(c, ellipsize(lines[i], 105), x, y + i * lineH, size, WHITE_70, false);
+    private void drawConfidenceBox(Canvas c, float x, float y, float w, float h, String title, String state, float s) {
+        int col = confidenceAccentColor(state);
+        rounded(c, x, y, x + w, y + h, 14 * s, 0xFF0D1017);
+        strokeRound(c, x, y, x + w, y + h, 14 * s, 1.5f * s, col);
+        centerFit(c, title, x + w / 2f, y + h * 0.40f, w - 12 * s, 18 * s, WHITE_70, true);
+        centerFit(c, state, x + w / 2f, y + h * 0.80f, w - 12 * s, 20.5f * s, col, true);
     }
 
-    private String ellipsize(String s, int max) {
-        if (s == null) return "—";
-        return s.length() <= max ? s : s.substring(0, Math.max(0, max - 1)) + "…";
-    }
-
-    private void infoRow(Canvas c, String a, String b, float y, float s) {
-        txt(c, a, 38 * s, y, 15 * s, 0xAAFFFFFF, false);
-        txt(c, b, 270 * s, y, 18 * s, Color.WHITE, true);
+    private void infoRow(Canvas c, String label, String value, float y, float cardW, float s) {
+        float labelX = 46 * s;
+        float valX = 248 * s;
+        float maxValW = Math.max(80 * s, cardW - (valX - 28 * s) - 18 * s);
+        fitTxt(c, label, labelX, y, 192 * s, 18.5f * s, 0xFFB8C2D0, true);
+        fitTxt(c, value == null ? "—" : value, valX, y, maxValW, 19.5f * s, Color.WHITE, true);
     }
 
     private boolean overlaps(RectF a, RectF b) {
         return RectF.intersects(a, b);
     }
 
+    boolean isLayoutValid() {
+        return layoutValid;
+    }
+
+    String getLayoutDiagnostic() {
+        return layoutDiagnostic;
+    }
+
+    RectF getUiMini() { return ui.mini; }
+    RectF getUiZoomArea() { return ui.zoomArea; }
+    RectF getUiZoomBadge() { return ui.zoomBadge; }
+    RectF getUiTelemetryCard() { return ui.telemetryCard; }
+    RectF getUiLens(int idx) { return ui.lens[idx]; }
+    float getUiScale() { return ui.scale; }
+    void setModalStateForAudit(boolean info, boolean modeMenu, boolean cameraMenu) {
+        this.showInfo = info;
+        this.showModeMenu = modeMenu;
+        this.showCameraMenu = cameraMenu;
+        postInvalidate();
+    }
+
+    void populateSampleHardwareStateForAudit(boolean wide, float maxZ, float currentZoom) {
+        this.wideSupported = wide;
+        this.minHardware = wide ? 0.5f : 1.0f;
+        this.maxHardware = maxZ;
+        this.zoom = currentZoom;
+        this.lastRequestedZoom = currentZoom;
+        this.lastResultZoom = currentZoom;
+        this.lastGeometricZoom = currentZoom;
+        this.zoomConfidence = ZoomConfidence.TRUSTED_RATIO;
+        this.cameraId = "0";
+        this.mainCameraId = "0";
+        this.publicCameraRecords.clear();
+        String[] ids = new String[]{"0", "1", "2", "3"};
+        int[] facings = new int[]{
+                CameraCharacteristics.LENS_FACING_BACK,
+                CameraCharacteristics.LENS_FACING_FRONT,
+                CameraCharacteristics.LENS_FACING_BACK,
+                CameraCharacteristics.LENS_FACING_BACK
+        };
+        for (int i = 0; i < ids.length; i++) {
+            CameraRecord r = new CameraRecord();
+            r.id = ids[i];
+            r.facing = facings[i];
+            r.logical = (i == 0);
+            r.fov = 1.2f;
+            r.range = new RangeZ(i == 0 && wide ? 0.5f : 1.0f, i == 0 ? maxZ : 4.0f);
+            r.pixels = new Size(4000, 3000);
+            r.area = 12_000_000L;
+            this.publicCameraRecords.add(r);
+        }
+        postInvalidate();
+    }
+
     private void validateLayout() {
         layoutValid = true;
         layoutDiagnostic = "OK";
+        if (overlaps(ui.header, ui.mini) || overlaps(ui.header, ui.telemetryCard)) {
+            layoutValid = false;
+            layoutDiagnostic = "PAINEL SUPERIOR SOBRE CABEÇALHO";
+        }
+        if (overlaps(ui.telemetryCard, ui.mini)) {
+            layoutValid = false;
+            layoutDiagnostic = "TELEMETRIA SOBRE MINIMAPA";
+        }
         for (int i = 0; i < ui.lens.length; i++) {
             if (ui.lens[i].left < 0 || ui.lens[i].right > getWidth()) { layoutValid = false; layoutDiagnostic = "LENTE FORA DA TELA"; }
             for (int j = i + 1; j < ui.lens.length; j++) if (overlaps(ui.lens[i], ui.lens[j])) { layoutValid = false; layoutDiagnostic = "LENTES SOBREPOSTAS"; }
+            if (overlaps(ui.mini, ui.lens[i]) || overlaps(ui.telemetryCard, ui.lens[i])) { layoutValid = false; layoutDiagnostic = "MINIMAPA SOBRE LENTES"; }
+            if (overlaps(ui.zoomArea, ui.lens[i])) { layoutValid = false; layoutDiagnostic = "LENTES SOBRE ZOOM"; }
         }
-        if (overlaps(ui.mini, ui.lens[0]) || overlaps(ui.mini, ui.lens[1]) || overlaps(ui.mini, ui.lens[2]) || overlaps(ui.mini, ui.lens[3]) || overlaps(ui.mini, ui.lens[4])) {
-            layoutValid = false; layoutDiagnostic = "MINIMAPA SOBRE LENTES";
+        if (overlaps(ui.mini, ui.zoomArea) || overlaps(ui.telemetryCard, ui.zoomArea)) {
+            layoutValid = false;
+            layoutDiagnostic = "MINIMAPA SOBRE ZOOM";
         }
         if (overlaps(ui.zoomArea, ui.shutter) || overlaps(ui.zoomArea, ui.flash) || overlaps(ui.zoomArea, ui.mode)) {
             layoutValid = false; layoutDiagnostic = "ZOOM SOBRE CONTROLES";
         }
         if (overlaps(ui.flash, ui.shutter) || overlaps(ui.shutter, ui.mode) || overlaps(ui.flash, ui.mode) ||
-                overlaps(ui.logExport, ui.flash) || overlaps(ui.logExport, ui.shutter) || overlaps(ui.logExport, ui.mode)) {
+                overlaps(ui.logExport, ui.flash) || overlaps(ui.logExport, ui.shutter) || overlaps(ui.logExport, ui.mode) ||
+                overlaps(ui.camera, ui.shutter) || overlaps(ui.info, ui.mode) ||
+                overlaps(ui.logExport, ui.camera) || overlaps(ui.camera, ui.info)) {
             layoutValid = false; layoutDiagnostic = "CONTROLES INFERIORES SOBREPOSTOS";
         }
     }
@@ -1839,7 +2352,9 @@ class UltraCameraView extends ViewGroup {
         } else {
             applyPreview();
         }
-        status = "ZOOM • " + zoomString() + " • " + zoomConfidenceLabel();
+        status = (z > Math.max(1f, maxHardware) + 0.05f)
+                ? "LIMITE CAMERA2 " + zoomString() + " • " + zoomConfidenceLabel()
+                : "ZOOM • " + zoomString() + " • " + zoomConfidenceLabel();
         if (triggerDiagnostic) {
             scheduleAutoDiagnostic(zoom);
         }
@@ -2575,6 +3090,20 @@ class UltraCameraView extends ViewGroup {
         }
     }
 
+    private boolean draggingZoomSlider;
+
+    private void applySliderTouch(float x, boolean finishGesture) {
+        float ratio = Math.max(0f, Math.min(1f, (x - ui.zoomTrack.left) / Math.max(1f, ui.zoomTrack.width())));
+        double minSlider = wideSupported ? 0.5 : 1.0;
+        double maxSlider = Math.max(minSlider + 0.01, maxHardware);
+        float nz = (float) Math.exp(Math.log(minSlider) + ratio * (Math.log(maxSlider) - Math.log(minSlider)));
+        if (wideSupported && nz < 0.96f) {
+            selectWide(nz);
+        } else {
+            selectMain(Math.max(1f, nz), finishGesture);
+        }
+    }
+
     @Override public boolean onInterceptTouchEvent(MotionEvent e) { return true; }
 
     @Override public boolean onTouchEvent(MotionEvent e) {
@@ -2584,6 +3113,7 @@ class UltraCameraView extends ViewGroup {
         validateLayout();
 
         if (e.getPointerCount() == 2 || pinchDistance > 0) {
+            draggingZoomSlider = false;
             if (e.getActionMasked() == MotionEvent.ACTION_POINTER_DOWN && e.getPointerCount() >= 2) {
                 pinchDistance = distance(e);
                 pinchStart = zoom;
@@ -2612,7 +3142,41 @@ class UltraCameraView extends ViewGroup {
             }
             return true;
         }
-        if (e.getActionMasked() != MotionEvent.ACTION_UP) return true;
+
+        int action = e.getActionMasked();
+        if (action == MotionEvent.ACTION_DOWN) {
+            if (!showInfo && !showCameraMenu && !showModeMenu && ui.zoomArea.contains(x, y)) {
+                draggingZoomSlider = true;
+                beginAeZoomLock();
+                applySliderTouch(x, false);
+                return true;
+            }
+            return true;
+        }
+        if (action == MotionEvent.ACTION_MOVE) {
+            if (draggingZoomSlider) {
+                applySliderTouch(x, false);
+                return true;
+            }
+            return true;
+        }
+        if (action == MotionEvent.ACTION_CANCEL) {
+            if (draggingZoomSlider) {
+                draggingZoomSlider = false;
+                aeZoomLockedByGesture = false;
+                scheduleAeUnlock();
+            }
+            return true;
+        }
+        if (action != MotionEvent.ACTION_UP) return true;
+
+        if (draggingZoomSlider) {
+            draggingZoomSlider = false;
+            aeZoomLockedByGesture = false;
+            scheduleAeUnlock();
+            applySliderTouch(x, true);
+            return true;
+        }
 
         if (showInfo) {
             showInfo = false;
@@ -2620,29 +3184,39 @@ class UltraCameraView extends ViewGroup {
             return true;
         }
         if (showCameraMenu) {
-            float top = 132 * ui.scale;
-            int shown = Math.min(8, publicCameraRecords.size());
+            int shown = Math.min(ui.cameraItems.length, publicCameraRecords.size());
             for (int i = 0; i < shown; i++) {
-                float bottom = top + 58 * ui.scale;
-                if (y >= top && y <= bottom) { selectCamera(publicCameraRecords.get(i).id); return true; }
-                top += 66 * ui.scale;
+                if (ui.cameraItems[i].contains(x, y)) {
+                    selectCamera(publicCameraRecords.get(i).id);
+                    return true;
+                }
             }
-            if (y < 120 * ui.scale || y > h - 34 * ui.scale) { showCameraMenu = false; postInvalidate(); }
+            showCameraMenu = false;
+            postInvalidate();
             return true;
         }
         if (showModeMenu) {
-            float top = 174 * ui.scale;
-            if (y >= top && y <= top + MODES.length * 79 * ui.scale) {
-                int i = (int) ((y - top) / (79 * ui.scale));
-                if (i >= 0 && i < MODES.length) {
-                    mode = Mode.values()[i]; showModeMenu = false; status = MODES[i] + " • PRONTO"; applyPreview(); postInvalidate();
+            for (int i = 0; i < MODES.length; i++) {
+                if (ui.modeItems[i].contains(x, y)) {
+                    mode = Mode.values()[i];
+                    showModeMenu = false;
+                    status = MODES[i] + " • PRONTO";
+                    applyPreview();
+                    postInvalidate();
+                    return true;
                 }
-            } else { showModeMenu = false; postInvalidate(); }
+            }
+            showModeMenu = false;
+            postInvalidate();
             return true;
         }
         if (ui.logExport.contains(x, y)) { exportDiagnosticLog(); return true; }
         if (ui.camera.contains(x, y)) { showCameraMenu = true; postInvalidate(); return true; }
-        if (ui.info.contains(x, y)) { showInfo = true; postInvalidate(); return true; }
+        if (ui.info.contains(x, y) || ui.telemetryCard.contains(x, y) || ui.zoomBadge.contains(x, y)) {
+            showInfo = true;
+            postInvalidate();
+            return true;
+        }
         if (ui.flash.contains(x, y)) {
             if (!flashAvailable) status = "FLASH INDISPONÍVEL";
             else { flashMode = (flashMode + 1) % 3; applyPreview(); status = flashLabel(); }
@@ -2659,12 +3233,7 @@ class UltraCameraView extends ViewGroup {
             }
         }
         if (ui.zoomArea.contains(x, y)) {
-            float ratio = Math.max(0f, Math.min(1f, (x - ui.zoomArea.left) / Math.max(1f, ui.zoomArea.width())));
-            double minSlider = wideSupported ? 0.5 : 1.0;
-            double maxSlider = Math.max(minSlider + 0.01, maxHardware);
-            float nz = (float) Math.exp(Math.log(minSlider) + ratio * (Math.log(maxSlider) - Math.log(minSlider)));
-            if (wideSupported && nz < 0.96f) selectWide(nz);
-            else selectMain(Math.max(1f, nz));
+            applySliderTouch(x, true);
             return true;
         }
         focus(x, y);
