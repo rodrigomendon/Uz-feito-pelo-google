@@ -88,5 +88,55 @@ public final class GeometryMath {
         return new Point(Math.max(0f, Math.min(1f, sx)), Math.max(0f, Math.min(1f, sy)));
     }
 
+    /**
+     * Selects the best native 4:3 (or sensor-aspect-matched) JPEG size index without falling back
+     * to a 16:9 cropped stream (such as 4096x2304 when 4096x3072 full-sensor 4:3 is available).
+     */
+    public static int chooseBestNative4x3SizeIndex(int[] widths, int[] heights, int sensorW, int sensorH, long maxSafePixels) {
+        if (widths == null || heights == null || widths.length == 0 || widths.length != heights.length) {
+            return -1;
+        }
+        float targetAspect = (sensorW > 0 && sensorH > 0) ? ((float) sensorW / sensorH) : (4f / 3f);
+        long safeCap = Math.max(12_000_000L, maxSafePixels);
+
+        int bestAspectSafeIdx = -1;
+        long bestAspectSafeArea = -1L;
+
+        int bestAspectOverallIdx = -1;
+        long bestAspectOverallArea = -1L;
+
+        int bestOverallIdx = 0;
+        long bestOverallArea = (long) widths[0] * heights[0];
+
+        for (int i = 0; i < widths.length; i++) {
+            int w = widths[i];
+            int h = heights[i];
+            if (w <= 0 || h <= 0) continue;
+            long area = (long) w * h;
+            float ratio = (float) Math.max(w, h) / Math.max(1, Math.min(w, h));
+            float targetNorm = Math.max(targetAspect, 1f / Math.max(1e-4f, targetAspect));
+            boolean matchesSensorAspect = Math.abs(ratio - targetNorm) <= 0.035f;
+
+            if (area > bestOverallArea) {
+                bestOverallArea = area;
+                bestOverallIdx = i;
+            }
+            if (matchesSensorAspect) {
+                if (area > bestAspectOverallArea) {
+                    bestAspectOverallArea = area;
+                    bestAspectOverallIdx = i;
+                }
+                if (area <= safeCap && area > bestAspectSafeArea) {
+                    bestAspectSafeArea = area;
+                    bestAspectSafeIdx = i;
+                }
+            }
+        }
+
+        if (bestAspectSafeIdx >= 0) return bestAspectSafeIdx;
+        if (bestAspectOverallIdx >= 0) return bestAspectOverallIdx;
+        return bestOverallIdx;
+    }
+
     private GeometryMath() {}
 }

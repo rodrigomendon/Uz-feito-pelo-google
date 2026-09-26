@@ -53,6 +53,31 @@ public class ScaleEstimatorTest {
         assertTrue("Expected high confidence for rich 2D scaled scene, got " + r.confidence, r.confidence >= 0.72f);
     }
 
+    @Test
+    public void recoversScaleUnderHandheldCameraShakeTranslation() {
+        int w = 160, h = 120;
+        byte[] a = new byte[w * h];
+        byte[] b = new byte[w * h];
+        float trueScale = 2.0f;
+        float shakeDx = 5.0f;
+        float shakeDy = -4.0f;
+        float cx = w * 0.5f, cy = h * 0.5f;
+
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                float dx = x - cx;
+                float dy = y - cy;
+                a[y * w + x] = (byte) syntheticPattern(dx, dy);
+                b[y * w + x] = (byte) syntheticPattern(dx / trueScale + shakeDx, dy / trueScale + shakeDy);
+            }
+        }
+
+        ScaleEstimator.Result r = ScaleEstimator.estimate(a, w, h, b, w, h, 1.2f, 2.8f);
+        assertFalse("Should recover scale even with handheld camera shake", Float.isNaN(r.scale));
+        assertEquals(trueScale, r.scale, 0.22f);
+        assertTrue("Expected high confidence under handheld shake, got " + r.confidence, r.confidence >= 0.52f);
+    }
+
     private static int syntheticPattern(float x, float y) {
         double v = 128.0
                 + 55.0 * Math.sin(x * 0.23) * Math.cos(y * 0.27)

@@ -2,6 +2,8 @@ package com.rodrigo.ultrazoom.diagnostic;
 
 public final class MemoryPolicy {
     public static final long DEFAULT_FRAME_BUDGET_BYTES = 64L * 1024L * 1024L;
+    public static final long FULL_RES_FRAME_BUDGET_BYTES = 256L * 1024L * 1024L;
+    public static final long MAX_NATIVE_4X3_PIXELS = 25_000_000L;
 
     public static int safeTargetFrames(int requested, int maxImages, int hardCap) {
         int cap = Math.max(1, Math.min(maxImages, hardCap));

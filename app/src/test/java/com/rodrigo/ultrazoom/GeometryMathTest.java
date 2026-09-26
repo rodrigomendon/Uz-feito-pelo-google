@@ -42,4 +42,17 @@ public class GeometryMathTest {
         assertEquals(0f, topLeft.x, 0.001f);
         assertEquals(1f, topLeft.y, 0.001f);
     }
+
+    @Test
+    public void choosesFull4x3SensorResolutionOver16x9Crop() {
+        // Real device configuration from user's screenshot:
+        // Sensor active array = 4096x3072 (4:3, 12.58 MP)
+        // Exposed JPEG sizes include 1920x1080 (16:9), 4096x2304 (16:9), and 4096x3072 (4:3 full sensor)
+        int[] widths = new int[]{1920, 4096, 3264, 4096};
+        int[] heights = new int[]{1080, 2304, 2448, 3072};
+        int chosenIdx = GeometryMath.chooseBestNative4x3SizeIndex(widths, heights, 4096, 3072, 20_000_000L);
+        assertEquals(3, chosenIdx);
+        assertEquals(4096, widths[chosenIdx]);
+        assertEquals(3072, heights[chosenIdx]);
+    }
 }
