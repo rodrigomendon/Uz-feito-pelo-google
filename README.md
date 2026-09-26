@@ -1,11 +1,20 @@
-<div align="center">
+# UltraZoom 12.4.0 — Auto Diagnostic
 
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
+Build identifier: `UZ-124-AUTODIAGNOSTIC`.
 
-  <h1>Built with AI Studio</h2>
+This package contains the 12.4.0 Auto Diagnostic source, `DiagnosticSessionStore`, and unit tests.
 
-  <p>The fastest path from prompt to production with Gemini.</p>
+The version separates zoom diagnosis into three layers:
 
-  <a href="https://aistudio.google.com/apps">Start building</a>
+- **A — Declarado:** Camera2 `CaptureResult`, zoom ratio and crop geometry.
+- **B — Observado:** comparison of preview frames captured at consecutive zoom levels when sufficient overlap/features exist, persisted per level and per pair (`z1 -> z2`).
+- **C — Inferido:** detail and acutance evidence compared across JPEGs the user voluntarily captures; no hidden still capture is performed and crop+upscale is rejected.
 
-</div>
+`UNKNOWN` means evidence is not available. It is not a failure. `FAIL` is contradictory evidence and is absorbing: any FAIL revokes the corresponding confirmation and requires recheck.
+
+## Confidence rule
+
+- Any `FAIL` → `REVOKED`.
+- Otherwise, missing evidence (`UNKNOWN`) is not failure and never revokes a prior `CONFIRMED`.
+- `CONFIRMED + CONFIRMED + UNKNOWN` → `PARTIAL`.
+- All three confirmed → `CONFIRMED`.

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Outer precision lens ring -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,24A30,30 0 1,0 54,84A30,30 0 1,0 54,24ZM54,30A24,24 0 1,1 54,78A24,24 0 1,1 54,30Z" />
+    <!-- Inner optical aperture ring -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M54,35A19,19 0 1,0 54,73A19,19 0 1,0 54,35ZM54,41A13,13 0 1,1 54,67A13,13 0 1,1 54,41Z" />
+    <!-- Center optical element -->
+    <path
+        android:fillColor="#F8FAFC"
+        android:pathData="M54,46A8,8 0 1,0 54,62A8,8 0 1,0 54,46Z" />
+    <!-- Precision crosshair ticks -->
+    <path
+        android:fillColor="#38BDF8"
+        android:pathData="M52.5,18h3v5h-3zM52.5,85h3v5h-3zM18,52.5h5v3h-5zM85,52.5h5v3h-5z" />
+</vector>

@@ -1,0 +1,122 @@
+name: Build UltraZoom APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+
+concurrency:
+  group: ultrazoom-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Prepare isolated Android project
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf "$RUNNER_TEMP/ultrazoom-project"
+          mkdir -p "$RUNNER_TEMP/ultrazoom-project"
+          archive="UltraZoom-00-v12.4.0-AUTODIAGNOSTIC.zip"
+          if [ ! -f "$archive" ]; then
+            echo "ERROR: $archive not found in repository root."
+            echo "ZIPs found in repository root:"
+            find . -maxdepth 1 -type f -name 'UltraZoom*.zip' -print
+            exit 1
+          fi
+          echo "Using archive: $archive"
+          unzip -q -o "$archive" -d "$RUNNER_TEMP/ultrazoom-project"
+          project="$RUNNER_TEMP/ultrazoom-project"
+          if [ -d "$project/UltraZoom" ] && [ -f "$project/UltraZoom/settings.gradle" ]; then
+            project="$project/UltraZoom"
+          fi
+          test -f "$project/settings.gradle"
+          test -f "$project/build.gradle"
+          test -f "$project/app/build.gradle"
+          test -f "$project/app/src/main/AndroidManifest.xml"
+          echo "PROJECT_DIR=$project" >> "$GITHUB_ENV"
+          echo "Project prepared at: $project"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.4.1'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          cmdline-tools-version: 12266719
+          accept-android-sdk-licenses: true
+          packages: ''
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;36.0.0"
+
+      - name: Run unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --stacktrace clean test
+
+      - name: Static regression checks
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=app/src/main/java/com/rodrigo/ultrazoom/MainActivity.java
+          grep -q 'UZ-124-AUTODIAGNOSTIC' "$src"
+          grep -q 'CONTROL_AF_TRIGGER_CANCEL' "$src"
+          grep -q 'MAX_SAMPLES_PER_LEVEL' "$src"
+          grep -q 'ScaleEstimator' "$src"
+          grep -q 'MemoryPolicy.safeTargetFrames' "$src"
+          if grep -q 'applySoftwareZoomToPhoto' "$src"; then
+            echo 'Forbidden software photo zoom path remains'
+            exit 1
+          fi
+          if grep -q 'calibrationActive\|toggleCalibration\|recordCalibrationSample' "$src"; then
+            echo 'Manual calibration path remains'
+            exit 1
+          fi
+          if grep -nE '\.invalidate\(\);' "$src"; then
+            echo 'Direct invalidate() remains'
+            exit 1
+          fi
+          echo 'Static regression checks passed.'
+
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle --no-daemon --stacktrace assembleDebug
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          apk="${PROJECT_DIR}/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$apk"
+          ls -lh "$apk"
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: UltraZoom-v12.4-debug-apk
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

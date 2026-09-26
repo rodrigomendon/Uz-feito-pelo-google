@@ -1,0 +1,6 @@
+{
+  "name": "UltraZoom",
+  "description": "Câmera computacional Camera2 com zoom honesto, autodiagnóstico A/B/C de capacidades reais, foco recuperável e preview 4:3 sem distorção.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
