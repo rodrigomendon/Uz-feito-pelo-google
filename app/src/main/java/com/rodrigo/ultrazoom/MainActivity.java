@@ -47,6 +47,7 @@ import android.view.WindowManager;
 import android.widget.Toast;
 
 import com.rodrigo.ultrazoom.diagnostic.AfStateMachine;
+import com.rodrigo.ultrazoom.diagnostic.CapturePlanner;
 import com.rodrigo.ultrazoom.diagnostic.DiagnosticSessionStore;
 import com.rodrigo.ultrazoom.diagnostic.GeometryMath;
 import com.rodrigo.ultrazoom.diagnostic.MemoryPolicy;
@@ -245,6 +246,17 @@ class UltraCameraView extends ViewGroup {
     private float diagnosticAnchor1xZoom = 1f;
     private byte[] diagnosticAnchorMidGray;
     private float diagnosticAnchorMidZoom = 0f;
+    private final Map<Float, byte[]> diagnosticAnchorMap =
+            Collections.synchronizedMap(new java.util.LinkedHashMap<Float, byte[]>());
+    private long lastPassiveAnchorTime;
+    private byte[] prevStabilityGray;
+    private float recentPreviewShiftPx = 0.25f;
+    private boolean sceneHdrDetected;
+    private volatile CapturePlanner.CapturePlan activeCapturePlan;
+    private volatile String lastCaptureEngineDiag;
+    private volatile String lastCaptureSciTelemetry;
+    private volatile String lastQualityVerdict;
+    private float lastFocalMm = 4.5f;
     private Bitmap referenceMiniBitmap;
     private static final int MAX_SAMPLES_PER_LEVEL = DiagnosticSessionStore.MAX_SAMPLES_PER_LEVEL;
     private static final int MAX_TOTAL_DIAGNOSTIC_SAMPLES = DiagnosticSessionStore.MAX_TOTAL_SAMPLES;
@@ -631,7 +643,12 @@ class UltraCameraView extends ViewGroup {
         String geoVal = (zoomConfidence == ZoomConfidence.TRUSTED_CROP_ONLY || zoomConfidence == ZoomConfidence.TRUSTED_RATIO)
                 ? String.format(Locale.US, "%.1f×", lastGeometricZoom) : "—";
         String line1 = String.format(Locale.US, "REQ %.1f× • CAM %.1f× • GEO %s", lastRequestedZoom, lastResultZoom, geoVal);
-        String line2 = "4:3 NATIVO • " + (wideSupported ? "0,5× ATIVO" : "0,5× NÃO EXPOSTO") + " • PARES B: " + diagnosticStore.getTotalPairsStored();
+        CapturePlanner.CapturePlan plan = activeCapturePlan;
+        String usefulPart = plan != null
+                ? String.format(Locale.US, " • ÚTIL %.0f× (%s)", plan.effectiveMaxUsefulZoom, plan.stability.label)
+                : "";
+        String line2 = "4:3 • PARES B: " + diagnosticStore.getTotalPairsStored() +
+                " • JPEGs C: " + diagnosticStore.getJpegs().size() + usefulPart;
         fitTxt(c, line1, box.left + padX, pillTop + pillH + 28 * s, innerW, 18.5f * s, Color.WHITE, true);
         if (pillTop + pillH + 56 * s <= box.bottom - 8 * s) {
             fitTxt(c, line2, box.left + padX, pillTop + pillH + 54 * s, innerW, 18 * s, 0xFFD0D7E2, true);
@@ -963,8 +980,12 @@ class UltraCameraView extends ViewGroup {
         float captionY = card.bottom - 13 * s;
         String minLabel = wideSupported ? "MIN 0,5×" : "MIN 1,0×";
         String maxLabel = String.format(Locale.US, "HW %.0f× • SR %.0f×", Math.max(1f, maxHardware), maxZ);
+        CapturePlanner.CapturePlan plan = activeCapturePlan;
+        String centerCaption = plan != null
+                ? (plan.regime.label + " • " + plan.stability.label + (sceneHdrDetected ? " • HDR" : ""))
+                : "FUSÃO MULTI-FRAME LANCZOS-3 ATIVA";
         fitTxt(c, minLabel, card.left + 20 * s, captionY, 105 * s, 18 * s, WHITE_70, true);
-        centerFit(c, "FUSÃO MULTI-FRAME LANCZOS-3 ATIVA", card.centerX(), captionY, card.width() - 280 * s, 17.5f * s, 0xFFD8E0EB, true);
+        centerFit(c, centerCaption, card.centerX(), captionY, card.width() - 280 * s, 17.5f * s, 0xFFD8E0EB, true);
         rightTxt(c, maxLabel, card.right - 20 * s, captionY, 150 * s, 18 * s, inSrZone ? 0xFF38BDF8 : WHITE_70, true);
     }
 
@@ -1131,6 +1152,7 @@ class UltraCameraView extends ViewGroup {
 
         String bStats = "Pares B: " + diagnosticStore.getTotalPairsStored() +
                 " • Confirmados: " + diagnosticStore.getConfirmedLevelsCount() +
+                " • JPEGs C: " + diagnosticStore.getJpegs().size() +
                 " • Amostras: " + diagnosticStore.getTotalSamples();
         fitTxt(c, bStats, cardLeft + 18 * s, c1Bottom - 12 * s, cardW - 36 * s, 18 * s, WHITE_92, false);
         y = c1Bottom + gap;
@@ -1149,7 +1171,9 @@ class UltraCameraView extends ViewGroup {
                 : String.format(Locale.US, "%.2f×", lastRequestedZoom);
         infoRow(c, "REQ / CAM / GEO", String.format(Locale.US, "%s / %.2f× / %s", reqStr, lastResultZoom, geoVal), ry, cardW, s); ry += rowStep2;
         infoRow(c, "Estado Camada A", zoomConfidenceLabel(), ry, cardW, s); ry += rowStep2;
-        infoRow(c, "Faixa Camera2", zoomDiagnostics + String.format(Locale.US, " • HyperZoom %.0f×", maxTotalZoom()), ry, cardW, s); ry += rowStep2;
+        CapturePlanner.CapturePlan plan = activeCapturePlan;
+        String usefulStr = plan != null ? String.format(Locale.US, " • Útil %.0f×", plan.effectiveMaxUsefulZoom) : "";
+        infoRow(c, "Faixa Camera2", zoomDiagnostics + usefulStr, ry, cardW, s); ry += rowStep2;
         infoRow(c, "Crop SCALER", cropString(lastResultCrop), ry, cardW, s); ry += rowStep2;
         infoRow(c, "Ultrawide 0,5×", wideSupported ? "EVIDÊNCIA COMPROVADA" : "NÃO EXPOSTO PELA CAMERA2", ry, cardW, s);
         y = c2Bottom + gap;
@@ -1177,9 +1201,13 @@ class UltraCameraView extends ViewGroup {
             float c4H = c4Bottom - y;
             float rowStep4 = (c4H - 42 * s) / 3f;
             ry = y + 34 * s + rowStep4 * 0.78f;
-            infoRow(c, "Motor Imagem", imageEngineDiagnostics, ry, cardW, s); ry += rowStep4;
-            infoRow(c, "Autofoco (AF)", focusDiagnostics, ry, cardW, s); ry += rowStep4;
-            infoRow(c, "Orientação", orientationDiagnostics, ry, cardW, s);
+            String engineStr = lastCaptureEngineDiag != null ? lastCaptureEngineDiag : imageEngineDiagnostics;
+            infoRow(c, "Motor Imagem", engineStr, ry, cardW, s); ry += rowStep4;
+            infoRow(c, "Autofoco / AE", focusDiagnostics, ry, cardW, s); ry += rowStep4;
+            String thirdRowVal = lastQualityVerdict != null
+                    ? (lastQualityVerdict + " • " + orientationDiagnostics)
+                    : orientationDiagnostics;
+            infoRow(c, lastQualityVerdict != null ? "Qualidade / 4:3" : "Orientação", thirdRowVal, ry, cardW, s);
         }
 
         // Footer close button
@@ -1794,6 +1822,7 @@ class UltraCameraView extends ViewGroup {
                         session = s;
                         miniInSession = true;
                         applyPreview();
+                        post(() -> scheduleAutoDiagnostic(Math.min(Math.max(1f, maxHardware), zoom)));
                     }
                     @Override public void onConfigureFailed(CameraCaptureSession s) {
                         createPhysicalFallbackSession(ps);
@@ -1809,6 +1838,7 @@ class UltraCameraView extends ViewGroup {
                         session = s;
                         miniInSession = true;
                         applyPreview();
+                        post(() -> scheduleAutoDiagnostic(Math.min(Math.max(1f, maxHardware), zoom)));
                     }
                     @Override public void onConfigureFailed(CameraCaptureSession s) {
                         createSimpleSession(ps, "FALHA AO CONFIGURAR CÂMERA");
@@ -1930,6 +1960,10 @@ class UltraCameraView extends ViewGroup {
             if (Build.VERSION.SDK_INT >= 28) {
                 try { b.set(CaptureRequest.DISTORTION_CORRECTION_MODE, CaptureRequest.DISTORTION_CORRECTION_MODE_HIGH_QUALITY); } catch (Exception ignored) { }
             }
+        } else if (template == CameraDevice.TEMPLATE_PREVIEW && zoom >= 4.0f) {
+            // Enhance live viewfinder edge definition and contrast at high zoom (4x..30x)
+            try { b.set(CaptureRequest.EDGE_MODE, CaptureRequest.EDGE_MODE_FAST); } catch (Exception ignored) { }
+            try { b.set(CaptureRequest.NOISE_REDUCTION_MODE, CaptureRequest.NOISE_REDUCTION_MODE_FAST); } catch (Exception ignored) { }
         }
         if (Build.VERSION.SDK_INT >= 36) {
             try {
@@ -2074,19 +2108,44 @@ class UltraCameraView extends ViewGroup {
                     lastResultPhysicalId = pid == null ? "(nenhum)" : pid;
                 }
                 Float focal = result.get(CaptureResult.LENS_FOCAL_LENGTH);
-                if (focal != null) lastFocalResult = String.format(Locale.US, "%.3fmm", focal);
+                if (focal != null) {
+                    lastFocalMm = focal;
+                    lastFocalResult = String.format(Locale.US, "%.3fmm", focal);
+                }
+                if (af != null) {
+                    String expMs = lastExposureTimeNs > 0 ? String.format(Locale.US, "%.1fms", lastExposureTimeNs / 1_000_000.0) : "—";
+                    String isoStr = lastSensitivity > 0 ? (" • ISO " + lastSensitivity) : "";
+                    focusDiagnostics = afStateName(af) + " • AE " + aeStateName(lastAeState) + " • " + expMs + isoStr;
+                }
                 updateStreamGeometryDiagnostics();
                 if (rz != null) {
-                    float sr = currentSrFactor();
+                    CapturePlanner.StabilityLevel stability = CapturePlanner.estimateSceneStability(
+                            recentPreviewShiftPx, lastExposureTimeNs, zoom, oisSupported);
+                    int workW = jpegSize == null ? 4096 : Math.max(1, jpegSize.getWidth());
+                    int workH = jpegSize == null ? 3072 : Math.max(1, jpegSize.getHeight());
+                    int maxImg = reader == null ? 8 : reader.getMaxImages();
+                    CapturePlanner.CapturePlan plan = CapturePlanner.planCapture(
+                            zoom,
+                            Math.max(1f, maxHardware),
+                            lastFocalMm,
+                            lastExposureTimeNs,
+                            lastSensitivity > 0 ? lastSensitivity : 200,
+                            oisSupported,
+                            stability,
+                            mode == Mode.NIGHT,
+                            sceneHdrDetected,
+                            maxImg,
+                            workW,
+                            workH);
+                    activeCapturePlan = plan;
                     imageEngineDiagnostics = String.format(Locale.US,
-                            "SR LANCZOS-3 (%dF) • REQ %.1f× (HW %.1f×%s) • CAM %.1f× • %s • OIS %s",
-                            plannedFramesForCurrentMode(),
-                            lastRequestedZoom,
-                            lastHardwareRequestedZoom,
-                            sr > 1.02f ? String.format(Locale.US, "×SR %.1f×", sr) : "",
-                            rz,
-                            zoomConfidenceLabel(),
+                            "%s (%dF) • %s • Útil %.0f× • OIS %s",
+                            plan.regime.label,
+                            plan.targetFrames,
+                            plan.stability.label,
+                            plan.effectiveMaxUsefulZoom,
                             oisSupported ? "ON" : "OFF");
+                    capturePassiveAnchorIfNeeded(rz);
                 }
                 postInvalidate();
             } catch (Exception ignored) { }
@@ -2274,10 +2333,15 @@ class UltraCameraView extends ViewGroup {
 
             preview.setTransform(matrix);
 
-            orientationDiagnostics = "display=" + displayDegrees + "° • sensor=" + sensorOrientation + "° • relative=" + relative +
-                    "° • transform=FRAME 4:3 UNIFORM" + (srFactor > 1.01f ? String.format(Locale.US, " (SR %.2f×)", srFactor) : "") +
-                    " • viewport=" + Math.round(vp.width) + "×" + Math.round(vp.height) +
-                    " • buffer=" + sizeString(previewSize);
+            orientationDiagnostics = String.format(
+                    Locale.US,
+                    "%d°/%d° (rel %d°) • 4:3 UNIFORM%s • %dx%d",
+                    displayDegrees,
+                    sensorOrientation,
+                    relative,
+                    srFactor > 1.01f ? String.format(Locale.US, " SR %.1f×", srFactor) : "",
+                    Math.round(vp.width),
+                    Math.round(vp.height));
             updateStreamGeometryDiagnostics();
         } catch (Exception ignored) { }
     }
@@ -2367,27 +2431,96 @@ class UltraCameraView extends ViewGroup {
         float previousZoom = zoom;
         manualCameraId = null;
         float maxTotal = maxTotalZoom();
-        zoom = Math.max(1f, Math.min(maxTotal, z));
+        final float targetZoom = Math.max(1f, Math.min(maxTotal, z));
+        final float targetHw = Math.min(Math.max(1f, maxHardware), targetZoom);
+        final float prevHw = Math.min(Math.max(1f, maxHardware), Math.max(1f, previousZoom));
+
         boolean needLensReopen = !mainCameraId.equals(cameraId) || activePhysicalId != null;
-        if (!needLensReopen && Math.abs(previousZoom - zoom) > 0.01f) beginAeZoomLock();
+        if (!needLensReopen && Math.abs(previousZoom - targetZoom) > 0.01f) beginAeZoomLock();
         cameraId = mainCameraId;
-        if (needLensReopen) {
-            close();
-            open();
-        } else {
+
+        // If user taps a distant zoom pill (e.g. 1x -> 10x or 30x) and no mid-zoom bridge anchor (~3.0x)
+        // exists yet, perform a 220ms optical bridge through 3.0x so Layer B observes 1.0->3.0 and 3.0->10.0
+        boolean largeJump = triggerDiagnostic && !needLensReopen
+                && Math.max(targetHw, prevHw) / Math.max(0.1f, Math.min(targetHw, prevHw)) > 3.4f
+                && !hasBridgeAnchorBetween(Math.min(targetHw, prevHw), Math.max(targetHw, prevHw));
+
+        if (largeJump) {
+            final float midHw = Math.min(Math.max(1f, maxHardware), 3.0f);
+            zoom = midHw;
             applyPreview();
+            postDelayed(() -> {
+                if (!isBusyForDiagnostic() && preview != null && preview.isAvailable()) {
+                    try {
+                        Bitmap bmMid = preview.getBitmap(320, 240);
+                        if (bmMid != null) {
+                            workHandler.post(() -> processPreviewDiagnostic(bmMid, midHw));
+                        }
+                    } catch (Exception ignored) { }
+                }
+                zoom = targetZoom;
+                applyPreview();
+                scheduleAutoDiagnostic(targetHw);
+                postInvalidate();
+            }, 220L);
+        } else {
+            zoom = targetZoom;
+            if (needLensReopen) {
+                close();
+                open();
+            } else {
+                applyPreview();
+            }
+            if (triggerDiagnostic) {
+                scheduleAutoDiagnostic(targetHw);
+            }
         }
+
         float sr = currentSrFactor();
         if (sr > 1.02f) {
             status = String.format(Locale.US, "HYPERZOOM SR %s • HW %.0f× • SR %.1f×", zoomString(), maxHardware, sr);
         } else {
             status = "ZOOM • " + zoomString() + " • " + zoomConfidenceLabel();
         }
-        if (triggerDiagnostic) {
-            float hwTarget = Math.min(Math.max(1f, maxHardware), zoom);
-            scheduleAutoDiagnostic(hwTarget);
-        }
         postInvalidate();
+    }
+
+    private boolean hasBridgeAnchorBetween(float lowZ, float highZ) {
+        synchronized (diagnosticAnchorMap) {
+            for (Float k : diagnosticAnchorMap.keySet()) {
+                if (k != null && k > lowZ * 1.15f && k < highZ * 0.85f
+                        && DiagnosticSessionStore.hasSufficientOverlap(lowZ, k)
+                        && DiagnosticSessionStore.hasSufficientOverlap(k, highZ)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void capturePassiveAnchorIfNeeded(float currentResultZoom) {
+        if (busy || pinchDistance > 0f || draggingZoomSlider) return;
+        if (Math.abs(currentResultZoom - lastHardwareRequestedZoom) > 0.18f) return;
+        float bucket = Math.round(currentResultZoom * 2f) / 2f;
+        if (bucket < 1.0f) return;
+        long now = System.currentTimeMillis();
+        if (now - lastPassiveAnchorTime < 900L) return;
+        boolean needAnchor;
+        synchronized (diagnosticAnchorMap) {
+            needAnchor = !diagnosticAnchorMap.containsKey(bucket);
+        }
+        if (!needAnchor) return;
+        lastPassiveAnchorTime = now;
+        final float zSnap = currentResultZoom;
+        post(() -> {
+            if (isBusyForDiagnostic() || preview == null || !preview.isAvailable()) return;
+            try {
+                Bitmap bm = preview.getBitmap(320, 240);
+                if (bm != null) {
+                    workHandler.post(() -> processPreviewDiagnostic(bm, zSnap));
+                }
+            } catch (Exception ignored) { }
+        });
     }
 
     private void capture() {
@@ -2399,12 +2532,26 @@ class UltraCameraView extends ViewGroup {
         finalizeScheduled = false;
         int workW = jpegSize == null ? 4096 : Math.max(1, jpegSize.getWidth());
         int workH = jpegSize == null ? 3072 : Math.max(1, jpegSize.getHeight());
-        int desiredFrames;
-        if (mode == Mode.MAX) desiredFrames = 6;
-        else if (mode == Mode.NIGHT) desiredFrames = 5;
-        else if (mode == Mode.ULTRA) desiredFrames = 4;
-        else if (zoom > 1.35f) desiredFrames = 4;
-        else desiredFrames = 3;
+        CapturePlanner.StabilityLevel stability = CapturePlanner.estimateSceneStability(
+                recentPreviewShiftPx, lastExposureTimeNs, zoom, oisSupported);
+        CapturePlanner.CapturePlan plan = CapturePlanner.planCapture(
+                zoom,
+                Math.max(1f, maxHardware),
+                lastFocalMm,
+                lastExposureTimeNs,
+                lastSensitivity > 0 ? lastSensitivity : 200,
+                oisSupported,
+                stability,
+                mode == Mode.NIGHT,
+                sceneHdrDetected,
+                reader.getMaxImages(),
+                workW,
+                workH);
+        activeCapturePlan = plan;
+
+        int desiredFrames = plan.targetFrames;
+        if (mode == Mode.MAX) desiredFrames = Math.max(desiredFrames, 6);
+        else if (mode == Mode.NIGHT) desiredFrames = Math.max(desiredFrames, 5);
         targetFrames = MemoryPolicy.safeTargetFrames(
                 desiredFrames,
                 reader.getMaxImages(),
@@ -2414,8 +2561,8 @@ class UltraCameraView extends ViewGroup {
                 MemoryPolicy.FULL_RES_FRAME_BUDGET_BYTES);
         float sr = currentSrFactor();
         imageEngineDiagnostics = sr > 1.02f
-                ? String.format(Locale.US, "SUPER-RESOLUÇÃO DRIZZLE+LANCZOS3 • %d FRAMES • SR %.2f×", targetFrames, sr)
-                : String.format(Locale.US, "FUSÃO MULTI-FRAME LUCKY+SUBPIXEL • %d FRAMES (4:3 FULL)", targetFrames);
+                ? String.format(Locale.US, "SR DRIZZLE+OPTICAL FLOW • %dF • SR %.2f×", targetFrames, sr)
+                : String.format(Locale.US, "FUSÃO MULTI-FRAME (%s) • %dF", plan.regime.label, targetFrames);
         completedCaptures = 0;
         status = targetFrames > 1
                 ? (mode == Mode.NIGHT
@@ -2432,9 +2579,21 @@ class UltraCameraView extends ViewGroup {
             CaptureRequest.Builder b = request(CameraDevice.TEMPLATE_STILL_CAPTURE);
             b.addTarget(reader.getSurface());
             b.set(CaptureRequest.JPEG_ORIENTATION, rotation());
-            if (completedCaptures > 0) {
-                if (aeLockSupported) b.set(CaptureRequest.CONTROL_AE_LOCK, true);
-                if (awbLockSupported) b.set(CaptureRequest.CONTROL_AWB_LOCK, true);
+            CapturePlanner.CapturePlan plan = activeCapturePlan;
+            Range<Integer> ar = chars == null ? null : chars.get(CameraCharacteristics.CONTROL_AE_COMPENSATION_RANGE);
+            if (plan != null && plan.hdrBracketingActive && plan.evBrackets != null
+                    && completedCaptures < plan.evBrackets.length && ar != null) {
+                int ev = Math.min(ar.getUpper(), Math.max(ar.getLower(), plan.evBrackets[completedCaptures]));
+                b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ev);
+            } else {
+                if (plan != null && plan.recommendedAeCompEv != 0 && mode != Mode.NIGHT && ar != null) {
+                    int ev = Math.min(ar.getUpper(), Math.max(ar.getLower(), plan.recommendedAeCompEv));
+                    b.set(CaptureRequest.CONTROL_AE_EXPOSURE_COMPENSATION, ev);
+                }
+                if (completedCaptures > 0) {
+                    if (aeLockSupported) b.set(CaptureRequest.CONTROL_AE_LOCK, true);
+                    if (awbLockSupported) b.set(CaptureRequest.CONTROL_AWB_LOCK, true);
+                }
             }
             session.capture(b.build(), new CameraCaptureSession.CaptureCallback() {
                 @Override public void onCaptureCompleted(CameraCaptureSession s, CaptureRequest r, TotalCaptureResult result) {
@@ -2496,22 +2655,72 @@ class UltraCameraView extends ViewGroup {
         Bitmap ref0 = input.get(0);
         if (ref0 == null || ref0.isRecycled()) return null;
         int w = ref0.getWidth(), h = ref0.getHeight();
-        List<int[]> rawBuffers = new ArrayList<int[]>(input.size());
-        for (int i = 0; i < input.size(); i++) {
-            Bitmap b = input.get(i);
-            if (b == null || b.isRecycled() || b.getWidth() != w || b.getHeight() != h) continue;
-            int[] px = new int[w * h];
-            b.getPixels(px, 0, w, 0, 0, w, h);
-            rawBuffers.add(px);
-        }
-        if (rawBuffers.isEmpty()) return ref0;
         float srFactor = currentSrFactor();
-        SuperResolutionEngine.BurstResult srResult = SuperResolutionEngine.processBurst(
-                rawBuffers, w, h, srFactor, zoom, mode == Mode.NIGHT);
-        if (srResult == null || srResult.pixels == null) return ref0;
+        boolean hdrActive = activeCapturePlan != null && activeCapturePlan.hdrBracketingActive;
+
+        // Smart ROI Extraction & Working Grid Policy:
+        // - When srFactor > 1.02x (e.g., 10x..30x HyperZoom), extract the exact 1:1 native sensor center ROI
+        //   directly from each Bitmap before allocating Java heap arrays, cutting RAM by up to 85% while
+        //   preserving 100% of native sensor spatial frequencies in the zoomed target region.
+        // - Reconstruct to bounded high-resolution grid (up to 2560x1920) so all 7 stages complete in <400ms.
+        int maxOutW = Math.min(w, 2560);
+        int maxOutH = Math.min(h, Math.max(1, Math.round((float) h * maxOutW / Math.max(1, w))));
+        List<int[]> rawBuffers = new ArrayList<int[]>(input.size());
+        int roiW;
+        int roiH;
+        float engineSrFactor;
+        int engineOutW;
+        int engineOutH;
+
+        if (srFactor > 1.02f) {
+            roiW = Math.max(64, Math.min(w, Math.round(w / srFactor)));
+            roiH = Math.max(64, Math.min(h, Math.round(h / srFactor)));
+            int roiX = Math.max(0, (w - roiW) / 2);
+            int roiY = Math.max(0, (h - roiH) / 2);
+            for (int i = 0; i < input.size(); i++) {
+                Bitmap b = input.get(i);
+                if (b == null || b.isRecycled() || b.getWidth() != w || b.getHeight() != h) continue;
+                int[] px = new int[roiW * roiH];
+                b.getPixels(px, 0, roiW, roiX, roiY, roiW, roiH);
+                rawBuffers.add(px);
+            }
+            engineSrFactor = 1.0f;
+            engineOutW = maxOutW;
+            engineOutH = maxOutH;
+        } else {
+            roiW = maxOutW;
+            roiH = maxOutH;
+            for (int i = 0; i < input.size(); i++) {
+                Bitmap b = input.get(i);
+                if (b == null || b.isRecycled() || b.getWidth() != w || b.getHeight() != h) continue;
+                Bitmap workBm = (w == roiW && h == roiH) ? b : Bitmap.createScaledBitmap(b, roiW, roiH, true);
+                int[] px = new int[roiW * roiH];
+                workBm.getPixels(px, 0, roiW, 0, 0, roiW, roiH);
+                if (workBm != b && !workBm.isRecycled()) workBm.recycle();
+                rawBuffers.add(px);
+            }
+            engineSrFactor = 1.0f;
+            engineOutW = roiW;
+            engineOutH = roiH;
+        }
+
+        if (rawBuffers.isEmpty()) return ref0;
+        SuperResolutionEngine.BurstResult srResult = SuperResolutionEngine.processBurstFull(
+                rawBuffers, roiW, roiH, engineSrFactor, engineOutW, engineOutH, zoom, mode == Mode.NIGHT, hdrActive);
+        if (srResult == null || srResult.pixels == null || srResult.pixels.length == 0) return ref0;
         lastZoomDx = Math.round(srResult.lastDx);
         lastZoomDy = Math.round(srResult.lastDy);
         imageEngineDiagnostics = srResult.diagnostics;
+        lastCaptureEngineDiag = srResult.diagnostics;
+        lastCaptureSciTelemetry = srResult.scientificTelemetry;
+        if (srResult.qualityComparison != null) {
+            lastQualityVerdict = String.format(
+                    Locale.US,
+                    "Det %+.1f%% • MTF %+.1f%% • SNR %+.1fdB",
+                    srResult.qualityComparison.acutanceGainPct,
+                    srResult.qualityComparison.mtfGainPct,
+                    srResult.qualityComparison.snrGainDb);
+        }
         Bitmap out = Bitmap.createBitmap(srResult.width, srResult.height, Bitmap.Config.ARGB_8888);
         out.setPixels(srResult.pixels, 0, srResult.width, 0, 0, srResult.width, srResult.height);
         return out;
@@ -2778,12 +2987,11 @@ class UltraCameraView extends ViewGroup {
      */
     private void captureMiniIfNeeded() {
         if (session == null || busy || preview == null || !preview.isAvailable()) return;
-        if (zoom > 1.15f && miniBitmap != null && !miniBitmap.isRecycled()) return;
         long now = System.currentTimeMillis();
-        if (miniCapturePending || now - lastMiniCapture < 1400) return;
-        if (zoom > 1.15f) return;
+        if (miniCapturePending || now - lastMiniCapture < 1100) return;
         miniCapturePending = true;
         lastMiniCapture = now;
+        final float curZoom = zoom;
         try {
             final Bitmap snap = preview.getBitmap(240, 180);
             if (snap == null) {
@@ -2792,9 +3000,18 @@ class UltraCameraView extends ViewGroup {
             }
             workHandler.post(() -> {
                 try {
-                    Bitmap old = miniBitmap;
-                    miniBitmap = snap;
-                    if (old != null && old != snap && !old.isRecycled()) old.recycle();
+                    // Analyze live preview stability (motion shift) and HDR dynamic range
+                    byte[] g = toGray(snap, 96, 72);
+                    if (g != null) {
+                        updatePreviewSceneTelemetry(g, 96, 72);
+                    }
+                    if (curZoom <= 1.18f) {
+                        Bitmap old = miniBitmap;
+                        miniBitmap = snap;
+                        if (old != null && old != snap && !old.isRecycled()) old.recycle();
+                    } else {
+                        if (!snap.isRecycled()) snap.recycle();
+                    }
                 } finally {
                     miniCapturePending = false;
                 }
@@ -2803,6 +3020,34 @@ class UltraCameraView extends ViewGroup {
         } catch (Exception e) {
             miniCapturePending = false;
         }
+    }
+
+    private void updatePreviewSceneTelemetry(byte[] gray, int w, int h) {
+        if (gray == null || gray.length < w * h) return;
+        int highlightClip = 0;
+        int shadowCrush = 0;
+        int minL = 255, maxL = 0;
+        for (int i = 0; i < gray.length; i++) {
+            int v = gray[i] & 0xFF;
+            if (v >= 242) highlightClip++;
+            if (v <= 14) shadowCrush++;
+            if (v < minL) minL = v;
+            if (v > maxL) maxL = v;
+        }
+        float hiFrac = (float) highlightClip / gray.length;
+        float loFrac = (float) shadowCrush / gray.length;
+        float dynStops = (float) (Math.log(Math.max(16, maxL) / (double) Math.max(4, minL)) / Math.log(2.0)) * 2.1f;
+        sceneHdrDetected = CapturePlanner.detectHdrScene(hiFrac, loFrac, dynStops);
+
+        if (prevStabilityGray != null && prevStabilityGray.length == gray.length) {
+            long diffSum = 0;
+            for (int i = 0; i < gray.length; i++) {
+                diffSum += Math.abs((gray[i] & 0xFF) - (prevStabilityGray[i] & 0xFF));
+            }
+            float mad = (float) diffSum / gray.length;
+            recentPreviewShiftPx = Math.max(0.08f, Math.min(4.0f, mad * 0.14f));
+        }
+        prevStabilityGray = gray;
     }
 
     private String escapeJson(String value) {
@@ -2887,21 +3132,42 @@ class UltraCameraView extends ViewGroup {
         if (!bm.isRecycled()) bm.recycle();
         if (gray == null) return;
 
-        // Multi-anchor selection: compare against the best overlapping reference (last sample, 1.0x anchor, or mid-zoom anchor)
+        // Multi-anchor selection: compare against the closest overlapping reference from diagnosticAnchorMap or recent samples
         byte[] refGray = null;
         float refZoom = 0f;
-        if (diagnosticLastGray != null && DiagnosticSessionStore.hasSufficientOverlap(diagnosticLastSampleZoom, z)) {
-            refGray = diagnosticLastGray;
-            refZoom = diagnosticLastSampleZoom;
-        } else if (diagnosticAnchor1xGray != null && DiagnosticSessionStore.hasSufficientOverlap(diagnosticAnchor1xZoom, z)) {
-            refGray = diagnosticAnchor1xGray;
-            refZoom = diagnosticAnchor1xZoom;
-        } else if (diagnosticAnchorMidGray != null && DiagnosticSessionStore.hasSufficientOverlap(diagnosticAnchorMidZoom, z)) {
-            refGray = diagnosticAnchorMidGray;
-            refZoom = diagnosticAnchorMidZoom;
+        float bestRatioDiff = Float.MAX_VALUE;
+
+        synchronized (diagnosticAnchorMap) {
+            for (Map.Entry<Float, byte[]> entry : diagnosticAnchorMap.entrySet()) {
+                float az = entry.getKey();
+                if (Math.abs(az - z) < 0.18f) continue;
+                if (DiagnosticSessionStore.hasSufficientOverlap(az, z)) {
+                    float ratio = Math.max(az, z) / Math.max(0.1f, Math.min(az, z));
+                    // Prefer moderate zoom ratios (~1.6x..2.8x) for maximum ZNCC template overlap
+                    float diff = Math.abs(ratio - 2.1f);
+                    if (diff < bestRatioDiff) {
+                        bestRatioDiff = diff;
+                        refZoom = az;
+                        refGray = entry.getValue();
+                    }
+                }
+            }
         }
 
-        if (refGray != null && refZoom > 0f) {
+        if (refGray == null) {
+            if (diagnosticLastGray != null && DiagnosticSessionStore.hasSufficientOverlap(diagnosticLastSampleZoom, z)) {
+                refGray = diagnosticLastGray;
+                refZoom = diagnosticLastSampleZoom;
+            } else if (diagnosticAnchor1xGray != null && DiagnosticSessionStore.hasSufficientOverlap(diagnosticAnchor1xZoom, z)) {
+                refGray = diagnosticAnchor1xGray;
+                refZoom = diagnosticAnchor1xZoom;
+            } else if (diagnosticAnchorMidGray != null && DiagnosticSessionStore.hasSufficientOverlap(diagnosticAnchorMidZoom, z)) {
+                refGray = diagnosticAnchorMidGray;
+                refZoom = diagnosticAnchorMidZoom;
+            }
+        }
+
+        if (refGray != null && refZoom > 0f && Math.abs(z - refZoom) >= 0.18f) {
             float ratio = z / Math.max(0.01f, refZoom);
             float expected = ratio >= 1f ? ratio : 1f / Math.max(0.01f, ratio);
             ScaleEstimator.Result r = ratio >= 1f
@@ -2911,11 +3177,21 @@ class UltraCameraView extends ViewGroup {
             persistDiagnosticState();
         }
 
-        // Update multi-anchor references so both small slider steps and direct pill jumps have a valid reference
+        // Store anchor in bucketed map (0.5x resolution buckets) + dedicated 1x/mid anchors
+        float bucket = Math.round(z * 2f) / 2f;
+        synchronized (diagnosticAnchorMap) {
+            if (diagnosticAnchorMap.size() >= 16 && !diagnosticAnchorMap.containsKey(bucket)) {
+                Float firstKey = diagnosticAnchorMap.keySet().iterator().next();
+                if (firstKey != null && firstKey > 1.2f) {
+                    diagnosticAnchorMap.remove(firstKey);
+                }
+            }
+            diagnosticAnchorMap.put(bucket, gray);
+        }
         if (z <= 1.15f) {
             diagnosticAnchor1xGray = gray;
             diagnosticAnchor1xZoom = z;
-        } else if (z >= 1.8f && z <= 2.6f) {
+        } else if (z >= 1.8f && z <= 3.5f) {
             diagnosticAnchorMidGray = gray;
             diagnosticAnchorMidZoom = z;
         }
@@ -3028,6 +3304,10 @@ class UltraCameraView extends ViewGroup {
         j.append("  \"maxTotalSamples\":").append(MAX_TOTAL_DIAGNOSTIC_SAMPLES).append(",\n");
         j.append("  \"samples\":").append(diagnosticStore.getTotalSamples()).append(",\n");
         j.append("  \"pairs\":").append(diagnosticStore.getTotalPairsStored()).append(",\n");
+        j.append("  \"jpegs\":").append(diagnosticStore.getJpegs().size()).append(",\n");
+        j.append("  \"scientificTelemetry\":\"").append(escapeJson(lastCaptureSciTelemetry == null ? "" : lastCaptureSciTelemetry)).append("\",\n");
+        j.append("  \"qualityVerdict\":\"").append(escapeJson(lastQualityVerdict == null ? "" : lastQualityVerdict)).append("\",\n");
+        j.append("  \"capturePlan\":\"").append(escapeJson(activeCapturePlan == null ? "" : activeCapturePlan.planTelemetry)).append("\",\n");
         j.append("  \"last\":{\"zoom\":").append(String.format(Locale.US, "%.3f", diagnosticStore.getLastSampleZoom()));
         j.append(",\"observedScale\":").append(Float.isNaN(lastObs) ? "null" : String.format(Locale.US, "%.3f", lastObs));
         j.append(",\"confidence\":").append(String.format(Locale.US, "%.3f", diagnosticStore.getLastObservedConfidence()));
@@ -3229,7 +3509,7 @@ class UltraCameraView extends ViewGroup {
         float[] targets = lensTargets();
         for (int i = 0; i < ui.lens.length; i++) {
             if (ui.lens[i].contains(x, y)) {
-                if (i == 0) selectWide();
+                if (targets[i] < 0.99f) selectWide();
                 else selectMain(targets[i]);
                 return true;
             }

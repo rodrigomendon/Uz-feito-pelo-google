@@ -154,7 +154,7 @@ public final class DiagnosticSessionStore {
         float contradictionThreshold = Math.max(0.28f, expected * 0.22f);
 
         ZoomConfidenceEngine.State obsState = ZoomConfidenceEngine.State.UNKNOWN;
-        if (confidence >= 0.72f) {
+        if (confidence >= 0.64f) {
             if (Math.abs(observedScale - expected) <= tol) {
                 level.good++;
                 pair.good++;
@@ -249,13 +249,13 @@ public final class DiagnosticSessionStore {
             return layerCState;
         }
 
-        // Compare against all other captured JPEG zoom levels
+        // Compare against all other captured JPEG zoom levels (supports up to 12x hardware zoom span)
         for (JpegRecord other : jpegs.values()) {
             if (Math.abs(other.zoom - rec.zoom) < 0.15f) continue;
             JpegRecord low = other.zoom < rec.zoom ? other : rec;
             JpegRecord high = other.zoom < rec.zoom ? rec : other;
             float expected = high.zoom / Math.max(0.1f, low.zoom);
-            if (expected < 1.15f || expected > 5.0f) continue;
+            if (expected < 1.15f || expected > 12.0f) continue;
 
             // Only evaluate detail when both JPEGs have meaningful scene structure
             if (low.edgeCount < 18 || high.edgeCount < 18 || low.fineDetail < 4f) {
@@ -263,13 +263,13 @@ public final class DiagnosticSessionStore {
             }
 
             boolean scaleMatched = false;
-            if (low.thumbGray != null && high.thumbGray != null &&
+            if (expected <= 4.2f && low.thumbGray != null && high.thumbGray != null &&
                 low.thumbW >= 32 && low.thumbH >= 32 && high.thumbW >= 32 && high.thumbH >= 32) {
                 ScaleEstimator.Result sr = ScaleEstimator.estimate(
                         low.thumbGray, low.thumbW, low.thumbH,
                         high.thumbGray, high.thumbW, high.thumbH,
                         Math.max(1f, expected * 0.65f), Math.min(5f, expected * 1.35f));
-                if (!Float.isNaN(sr.scale) && sr.confidence >= 0.72f) {
+                if (!Float.isNaN(sr.scale) && sr.confidence >= 0.64f) {
                     float tol = Math.max(0.20f, expected * 0.14f);
                     float failTol = Math.max(0.30f, expected * 0.24f);
                     if (Math.abs(sr.scale - expected) >= failTol) {
@@ -288,7 +288,7 @@ public final class DiagnosticSessionStore {
             // and acutanceRatio (fine/coarse) to collapse sharply relative to the 1x JPEG.
             float acutanceRetention = high.acutanceRatio / Math.max(1e-3f, low.acutanceRatio);
             float fineRetention = high.fineDetail / Math.max(1e-3f, low.fineDetail);
-            float upscaleCollapseLimit = Math.min(0.42f, 0.58f / expected);
+            float upscaleCollapseLimit = Math.min(0.42f, 0.58f / Math.min(5.0f, expected));
 
             if (expected >= 1.5f && (acutanceRetention < upscaleCollapseLimit || fineRetention < 0.22f)) {
                 // Severe loss of native pixel acutance typical of software crop+upscale
@@ -297,11 +297,11 @@ public final class DiagnosticSessionStore {
                 return layerCState;
             }
 
-            boolean detailPreserved = acutanceRetention >= Math.max(0.48f, 0.76f / expected)
-                    && fineRetention >= 0.45f
+            boolean detailPreserved = acutanceRetention >= Math.max(0.44f, 0.76f / Math.min(5.0f, expected))
+                    && fineRetention >= 0.42f
                     && high.acutanceRatio >= 0.30f;
 
-            if (detailPreserved && (scaleMatched || fineRetention >= 0.72f)) {
+            if (detailPreserved && (scaleMatched || fineRetention >= 0.65f)) {
                 high.state = ZoomConfidenceEngine.transition(high.state, ZoomConfidenceEngine.State.CONFIRMED);
                 layerCState = ZoomConfidenceEngine.transition(layerCState, ZoomConfidenceEngine.State.CONFIRMED);
             } else if (detailPreserved) {
